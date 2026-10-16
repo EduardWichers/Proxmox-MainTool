@@ -1,0 +1,22 @@
+[Unit]
+Description=Proxmox Maintool
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+User=maintool
+Group=maintool
+WorkingDirectory=/opt/maintool/app
+EnvironmentFile=/etc/maintool/maintool.env
+ExecStart=/opt/maintool/venv/bin/uvicorn main:app --host 0.0.0.0 --port 8443 \
+  --ssl-keyfile /etc/maintool/tls.key --ssl-certfile /etc/maintool/tls.crt \
+  --proxy-headers --no-server-header --timeout-keep-alive 75
+Restart=on-failure
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+StateDirectory=maintool
+
+[Install]
+WantedBy=multi-user.target

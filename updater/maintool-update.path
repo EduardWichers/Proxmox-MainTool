@@ -1,0 +1,10 @@
+[Unit]
+Description=Proxmox Maintool - wacht op een update vanuit de pagina
+
+[Path]
+# De webdienst zet hier het startsein neer nadat het bestand is gecontroleerd en het wachtwoord opnieuw is gevraagd.
+PathExists=/var/lib/maintool/update/apply
+Unit=maintool-update.service
+
+[Install]
+WantedBy=multi-user.target

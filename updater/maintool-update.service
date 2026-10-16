@@ -1,0 +1,7 @@
+[Unit]
+Description=Proxmox Maintool - update installeren die via de pagina is aangeleverd
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/python3 /usr/local/sbin/maintool-updater apply
+PrivateTmp=true

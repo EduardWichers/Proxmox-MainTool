@@ -1,0 +1,26 @@
+#!/usr/bin/env bash
+# Stand-in for pct: logs calls, keeps pushed files in a folder, answers the few questions the setup asks a container.
+echo "pct $*" >>"$CALLS"
+cmd=$1; id=$2; shift 2
+case $cmd in
+    create)  [[ -z ${CREATE_FAIL:-} ]] || { echo "unable to create CT $id - nagebootste fout" >&2; exit 255; } ;;
+    start | stop | destroy) : ;;
+    config)  if [[ -f $FIX/config-$id ]]; then cat "$FIX/config-$id"; else echo "Configuration file 'nodes/x/lxc/$id.conf' does not exist" >&2; exit 2; fi ;;
+    push)    mkdir -p "$CTROOT$(dirname "$2")"; cp "$1" "$CTROOT$2" ;;
+    exec)
+        shift
+        case "$*" in
+            "getent hosts deb.debian.org")              [[ -z ${NO_NET:-} ]] ;;
+            "cat /etc/maintool/ssh/id_ed25519.pub")     echo "ssh-ed25519 $CT_KEY maintool" ;;
+            "hostname -I")                              echo "192.168.30.202 " ;;
+            "test -f /opt/maintool/app/main.py")        [[ -z ${NO_TOOL:-} ]] ;;
+            "cat /opt/maintool/app/VERSION")            echo "0.9" ;;
+            "systemctl restart maintool")               : ;;
+            "mkdir -p /etc/maintool/ssh")               : ;;
+            runuser*selftest.py*)                       echo "Zelftest (nagebootst)"; echo "Uitslag: ${SELFTEST_FAIL:+1}${SELFTEST_FAIL:-0} fout(en)."; [[ -z ${SELFTEST_FAIL:-} ]] ;;
+            sh\ -c*install.sh*)                         [[ -z ${INSTALL_FAIL:-} ]] ;;
+            sh\ -c*)                                    : ;;
+            *) echo "stand-in pct exec kent dit niet: $*" >&2; exit 99 ;;
+        esac ;;
+    *) echo "stand-in pct kent dit niet: $cmd" >&2; exit 99 ;;
+esac

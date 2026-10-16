@@ -1,0 +1,262 @@
+<!doctype html>
+<html lang="nl">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Inloggen – Proxmox Maintool</title>
+<style>
+  /* Thema "liquid glass": doorschijnende panelen met blur boven een gekleurde achtergrond.
+     --glass* zijn de materiaallagen, --edge/--shine de lichtrand, --wash de achtergrond. */
+  :root {
+    color-scheme: light;
+    --text:#1c1c1e; --muted:rgba(60,60,67,.72); --line:rgba(60,60,67,.13);
+    --glass:rgba(255,255,255,.5); --glass-strong:rgba(255,255,255,.78); --glass-soft:rgba(255,255,255,.42);
+    --edge:rgba(255,255,255,.8); --shine:rgba(255,255,255,.9); --sheen:rgba(255,255,255,.45);
+    --shadow:rgba(40,60,110,.16); --inset:rgba(255,255,255,.55);
+    --ok:#28a94f; --warn:#e08a00; --bad:#e5342a; --accent:#007aff;
+    --wash:
+      radial-gradient(60vw 60vh at 6% 0%, #b7d5ff 0%, transparent 62%),
+      radial-gradient(52vw 56vh at 100% 8%, #ffd0e6 0%, transparent 62%),
+      radial-gradient(62vw 60vh at 72% 100%, #c2f1e0 0%, transparent 62%),
+      radial-gradient(46vw 52vh at 0% 100%, #e0d2ff 0%, transparent 62%), #edf1f8;
+  }
+  :root[data-scheme=dark] {
+    color-scheme: dark;
+    --text:#f5f5f7; --muted:rgba(235,235,245,.64); --line:rgba(255,255,255,.1);
+    --glass:rgba(255,255,255,.075); --glass-strong:rgba(38,42,58,.72); --glass-soft:rgba(255,255,255,.09);
+    --edge:rgba(255,255,255,.18); --shine:rgba(255,255,255,.26); --sheen:rgba(255,255,255,.1);
+    --shadow:rgba(0,0,0,.42); --inset:rgba(0,0,0,.3);
+    --ok:#32d74b; --warn:#ffd60a; --bad:#ff5a50; --accent:#0a84ff;
+    --wash:
+      radial-gradient(60vw 60vh at 6% 0%, #17387f 0%, transparent 62%),
+      radial-gradient(52vw 56vh at 100% 8%, #5a1f6c 0%, transparent 62%),
+      radial-gradient(62vw 60vh at 72% 100%, #0b5650 0%, transparent 62%),
+      radial-gradient(46vw 52vh at 0% 100%, #2a2977 0%, transparent 62%), #090b12;
+  }
+  * { box-sizing:border-box; }
+  body { margin:0; min-height:100vh; color:var(--text); accent-color:var(--accent);
+         font:14px/1.45 -apple-system,BlinkMacSystemFont,"SF Pro Text","Segoe UI",system-ui,sans-serif; }
+  body::before { content:""; position:fixed; inset:0; z-index:-1; background:var(--wash); }
+
+  body { display:grid; place-items:center; padding:20px; }
+  form { width:min(380px,100%); padding:26px 26px 22px; border-radius:26px; border:1px solid var(--edge);
+         background:linear-gradient(135deg, var(--sheen), transparent 42%), var(--glass);
+         -webkit-backdrop-filter:blur(28px) saturate(180%); backdrop-filter:blur(28px) saturate(180%);
+         box-shadow:inset 0 1px 0 var(--shine), 0 10px 36px var(--shadow); }
+  h1 { font-size:19px; font-weight:600; margin:0 0 18px; letter-spacing:-.01em; }
+  label { display:block; font-size:12px; color:var(--muted); margin:12px 0 5px; }
+  input { width:100%; font:inherit; padding:9px 14px; border-radius:999px; color:var(--text);
+          border:1px solid var(--edge); background:var(--glass-soft); box-shadow:inset 0 1px 0 var(--shine); }
+  input:focus-visible, button:focus-visible { outline:3px solid color-mix(in srgb, var(--accent) 40%, transparent); outline-offset:1px; }
+  button { width:100%; margin-top:20px; font:inherit; font-weight:600; padding:10px; border-radius:999px; cursor:pointer;
+           color:#fff; background:var(--accent); border:1px solid color-mix(in srgb, var(--accent) 55%, white); }
+  button:disabled { opacity:.5; cursor:default; }
+  #msg { min-height:18px; margin:14px 0 0; font-size:13px; color:var(--bad); }
+  /* soort account (eigen of Proxmox) en de knoppen voor SSO */
+  .kind { display:flex; gap:4px; padding:3px; border-radius:999px; border:1px solid var(--edge); background:var(--glass-soft); margin:0 0 4px; }
+  .kind button { flex:1; margin:0; padding:6px 8px; font-weight:500; font-size:13px; color:var(--text); background:none; border-color:transparent; }
+  .kind button[aria-pressed=true] { color:#fff; background:var(--accent); }
+  select { width:100%; font:inherit; padding:9px 14px; border-radius:999px; color:var(--text); border:1px solid var(--edge); background:var(--glass-soft); }
+  .or { display:flex; align-items:center; gap:10px; margin:18px 0 0; font-size:12px; color:var(--muted); }
+  .or::before, .or::after { content:""; flex:1; height:1px; background:var(--line); }
+  .sso { margin-top:10px; color:var(--text); background:var(--glass-soft); border-color:var(--edge); font-weight:600; }
+  .sso + .sso { margin-top:8px; }
+  [hidden] { display:none !important; }
+  select { -webkit-appearance:none; appearance:none; padding-right:34px; background-repeat:no-repeat; background-position:right 14px center; background-size:11px 7px;
+           background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 12 8'%3E%3Cpath d='M1.2 1.6l4.8 4.6 4.8-4.6' fill='none' stroke='%233c3c43' stroke-opacity='.8' stroke-width='1.7' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E"); }
+  :root[data-scheme=dark] select { background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 12 8'%3E%3Cpath d='M1.2 1.6l4.8 4.6 4.8-4.6' fill='none' stroke='%23ebebf5' stroke-opacity='.85' stroke-width='1.7' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E"); }
+  /* Het uitklapmenu tekent de browser zelf; op Windows anders witte tekst op wit in het donkere thema. */
+  select option { color:var(--text); background-color:#ffffff; }
+  :root[data-scheme=dark] select option { background-color:#23273a; }
+  .credits { margin:10px 0 0; font-size:11px; color:var(--muted); text-align:center; }
+  label.keep { display:flex; gap:9px; align-items:center; margin:14px 2px 0; font-size:13px; color:var(--text); cursor:pointer; }
+  label.keep input { width:auto; margin:0; padding:0; box-shadow:none; }
+  #msg.info { color:var(--muted); }
+</style>
+<script>
+// Taal: zoals in de tool gekozen (bewaard in deze browser), anders die van de browser. Het cookie laat de tool zijn
+// meldingen in dezelfde taal sturen. De teksten zelf worden onderaan vertaald.
+const LANG_KEY = "maintool_lang";
+let LANG = null;
+try { LANG = localStorage.getItem(LANG_KEY); } catch (e) {}
+if (!["nl", "en", "de"].includes(LANG)) LANG = ["nl", "en", "de"].find(l => (navigator.language || "").toLowerCase().startsWith(l)) || "en";
+document.documentElement.lang = LANG;
+document.cookie = `${LANG_KEY}=${LANG}; path=/; max-age=31536000; samesite=lax` + (location.protocol === "https:" ? "; secure" : "");
+const I18N = {"en": {"Inloggen – Proxmox Maintool": "Log in – Proxmox Maintool", "Gebruikersnaam": "Username", "Wachtwoord": "Password", "Inloggen": "Log in", "Inloggen mislukt": "Login failed", "Geen verbinding met de tool": "No connection to the tool", "door": "by", "Maintool-account": "Maintool account", "Proxmox-account": "Proxmox account", "Realm": "Realm", "of": "or", "Inloggen met Cloudflare Access": "Log in with Cloudflare Access", "Inloggen met {0}": "Log in with {0}", "Inloggen met SSO staat uit.": "Logging in with SSO is turned off.", "De SSO-dienst is nu niet bereikbaar. Probeer het later opnieuw of log in met je wachtwoord.": "The SSO service cannot be reached right now. Try again later or log in with your password.", "Inloggen bij de SSO-dienst is afgebroken of geweigerd.": "Logging in at the SSO service was cancelled or refused.", "Het inloggen duurde te lang of is in een ander venster begonnen. Probeer het opnieuw.": "Logging in took too long or was started in another window. Try again.", "Het antwoord van de SSO-dienst klopt niet; er is niet ingelogd.": "The answer of the SSO service is not right; you were not logged in.", "De SSO-dienst gaf geen bevestigd mailadres mee; er is niet ingelogd.": "The SSO service gave no confirmed mail address; you were not logged in.", "Dit account is niet aan een gebruiker van de tool gekoppeld. Vraag de beheerder om het te koppelen.": "This account is not linked to a user of the tool. Ask the administrator to link it.", "Dit mailadres hoort in de tool bij een ander account van de SSO-dienst; er is niet ingelogd.": "In the tool this mail address belongs to another account of the SSO service; you were not logged in.", "Te veel mislukte pogingen. Probeer het over tien minuten opnieuw.": "Too many failed attempts. Try again in ten minutes.", "Ingelogd blijven ({0} dagen)": "Stay logged in ({0} days)", "Je bent uitgelogd omdat je {0} minuten niets hebt gedaan.": "You were logged out because you did nothing for {0} minutes.", "Inloggen met beveiligingssleutel": "Log in with security key", "Raak je beveiligingssleutel aan…": "Touch your security key…", "Je wachtwoord klopt. Raak nu je beveiligingssleutel aan…": "Your password is right. Now touch your security key…", "Geannuleerd, of de sleutel reageerde niet op tijd": "Cancelled, or the key did not respond in time", "De browser staat beveiligingssleutels op dit adres niet toe (een IP-adres of een certificaatfout)": "The browser does not allow security keys on this address (an IP address or a certificate error)"}, "de": {"Inloggen – Proxmox Maintool": "Anmelden – Proxmox Maintool", "Gebruikersnaam": "Benutzername", "Wachtwoord": "Passwort", "Inloggen": "Anmelden", "Inloggen mislukt": "Anmeldung fehlgeschlagen", "Geen verbinding met de tool": "Keine Verbindung zum Tool", "door": "von", "Maintool-account": "Maintool-Konto", "Proxmox-account": "Proxmox-Konto", "Realm": "Realm", "of": "oder", "Inloggen met Cloudflare Access": "Mit Cloudflare Access anmelden", "Inloggen met {0}": "Mit {0} anmelden", "Inloggen met SSO staat uit.": "Die Anmeldung mit SSO ist ausgeschaltet.", "De SSO-dienst is nu niet bereikbaar. Probeer het later opnieuw of log in met je wachtwoord.": "Der SSO-Dienst ist gerade nicht erreichbar. Versuche es später erneut oder melde dich mit deinem Passwort an.", "Inloggen bij de SSO-dienst is afgebroken of geweigerd.": "Die Anmeldung beim SSO-Dienst wurde abgebrochen oder abgelehnt.", "Het inloggen duurde te lang of is in een ander venster begonnen. Probeer het opnieuw.": "Die Anmeldung hat zu lange gedauert oder wurde in einem anderen Fenster begonnen. Versuche es erneut.", "Het antwoord van de SSO-dienst klopt niet; er is niet ingelogd.": "Die Antwort des SSO-Dienstes stimmt nicht; es wurde nicht angemeldet.", "De SSO-dienst gaf geen bevestigd mailadres mee; er is niet ingelogd.": "Der SSO-Dienst lieferte keine bestätigte Mailadresse; es wurde nicht angemeldet.", "Dit account is niet aan een gebruiker van de tool gekoppeld. Vraag de beheerder om het te koppelen.": "Dieses Konto ist mit keinem Benutzer des Tools verknüpft. Bitte den Administrator, es zu verknüpfen.", "Dit mailadres hoort in de tool bij een ander account van de SSO-dienst; er is niet ingelogd.": "Im Tool gehört diese Mailadresse zu einem anderen Konto des SSO-Dienstes; es wurde nicht angemeldet.", "Te veel mislukte pogingen. Probeer het over tien minuten opnieuw.": "Zu viele fehlgeschlagene Versuche. Versuche es in zehn Minuten erneut.", "Ingelogd blijven ({0} dagen)": "Angemeldet bleiben ({0} Tage)", "Je bent uitgelogd omdat je {0} minuten niets hebt gedaan.": "Du wurdest abgemeldet, weil du {0} Minuten lang nichts getan hast.", "Inloggen met beveiligingssleutel": "Mit Sicherheitsschlüssel anmelden", "Raak je beveiligingssleutel aan…": "Berühre deinen Sicherheitsschlüssel…", "Je wachtwoord klopt. Raak nu je beveiligingssleutel aan…": "Dein Passwort stimmt. Berühre jetzt deinen Sicherheitsschlüssel…", "Geannuleerd, of de sleutel reageerde niet op tijd": "Abgebrochen, oder der Schlüssel hat nicht rechtzeitig reagiert", "De browser staat beveiligingssleutels op dit adres niet toe (een IP-adres of een certificaatfout)": "Der Browser erlaubt auf dieser Adresse keine Sicherheitsschlüssel (eine IP-Adresse oder ein Zertifikatsfehler)"}};
+const t = (s, ...args) => ((I18N[LANG] || {})[s] ?? s).replace(/\{(\d)\}/g, (m, i) => args[i] ?? m);
+
+// Zelfde achtergrond als de tool: de laatst gekozen kleur staat, al uitgerekend, in deze browser
+// (zie theme() in index.html). Zonder eigen kleur volgt het thema licht/donker van het systeem.
+(() => {
+  const root = document.documentElement, dark = matchMedia("(prefers-color-scheme: dark)");
+  let t = null;
+  try { t = JSON.parse(localStorage.getItem("maintool_bg")); } catch (e) {}
+  if (!t || !/^(light|dark)$/.test(t.scheme) || typeof t.wash !== "string") t = null;
+  const scheme = () => { root.dataset.scheme = t ? t.scheme : dark.matches ? "dark" : "light"; };
+  scheme();
+  dark.addEventListener("change", scheme);
+  for (const [name, key] of [["--wash", "wash"], ["--glass", "glass"], ["--glass-soft", "soft"]])
+    if (t && typeof t[key] === "string" && t[key]) root.style.setProperty(name, t[key]);
+})();
+</script>
+</head>
+<body>
+<form id="f" autocomplete="on">
+  <h1>Proxmox Maintool</h1>
+  <div class="kind" id="kind" hidden role="group">
+    <button type="button" data-kind="password" aria-pressed="true" data-t>Maintool-account</button>
+    <button type="button" data-kind="proxmox" aria-pressed="false" data-t>Proxmox-account</button>
+  </div>
+  <label for="u" data-t>Gebruikersnaam</label>
+  <input id="u" name="username" autocomplete="username" autocapitalize="none" spellcheck="false" required autofocus>
+  <label for="realm" class="px" hidden data-t>Realm</label>
+  <select id="realm" class="px" hidden></select>
+  <label for="p" data-t>Wachtwoord</label>
+  <input id="p" name="password" type="password" autocomplete="current-password" required>
+  <label class="keep" id="keepbox" hidden><input type="checkbox" id="keep"> <span id="keeptext"></span></label>
+  <button id="go" data-t>Inloggen</button>
+  <div id="ssobox" hidden>
+    <p class="or" data-t>of</p>
+    <button type="button" class="sso" id="oidc" hidden></button>
+    <button type="button" class="sso" id="cf" hidden data-t>Inloggen met Cloudflare Access</button>
+    <button type="button" class="sso" id="key" hidden data-t>Inloggen met beveiligingssleutel</button>
+  </div>
+  <p id="msg" role="alert"></p>
+  <p class="credits">Proxmox Maintool v{{VERSION}} · <span data-t>door</span> Eduard Wichers</p>
+</form>
+<script>
+const $ = s => document.querySelector(s);
+document.title = t(document.title);
+for (const el of document.querySelectorAll("[data-t]")) el.textContent = t(el.textContent);
+const next = () => location.hash === "#sxy" ? "/#sxy" : "/";   // het dashboard blijft het dashboard
+let KIND = "password";
+
+// Foutcodes van de terugkeer van een SSO-dienst (vaste codes, nooit tekst van buiten).
+const SSO_CODES = {
+  off: "Inloggen met SSO staat uit.",
+  down: "De SSO-dienst is nu niet bereikbaar. Probeer het later opnieuw of log in met je wachtwoord.",
+  denied: "Inloggen bij de SSO-dienst is afgebroken of geweigerd.",
+  expired: "Het inloggen duurde te lang of is in een ander venster begonnen. Probeer het opnieuw.",
+  invalid: "Het antwoord van de SSO-dienst klopt niet; er is niet ingelogd.",
+  noemail: "De SSO-dienst gaf geen bevestigd mailadres mee; er is niet ingelogd.",
+  unknown: "Dit account is niet aan een gebruiker van de tool gekoppeld. Vraag de beheerder om het te koppelen.",
+  mismatch: "Dit mailadres hoort in de tool bij een ander account van de SSO-dienst; er is niet ingelogd.",
+  blocked: "Te veel mislukte pogingen. Probeer het over tien minuten opnieuw." };
+const query = new URLSearchParams(location.search), code = query.get("sso"), idle = Number(query.get("idle"));
+if (code) $("#msg").textContent = t(SSO_CODES[code] || "Inloggen mislukt");
+else if (idle > 0) {   // de tool logde zelf uit na een tijd zonder activiteit
+  $("#msg").textContent = t("Je bent uitgelogd omdat je {0} minuten niets hebt gedaan.", idle);
+  $("#msg").className = "info";
+}
+if (code || idle) { try { history.replaceState(null, "", location.pathname + location.hash); } catch (e) {} }
+// Ingelogd blijven: de keuze van de vorige keer staat in deze browser
+const keep = () => !$("#keepbox").hidden && $("#keep").checked;
+try { $("#keep").checked = localStorage.getItem("maintool_keep") === "1"; } catch (e) {}
+$("#keep").addEventListener("change", () => { try { localStorage.setItem("maintool_keep", $("#keep").checked ? "1" : "0"); } catch (e) {} });
+
+function setKind(kind) {
+  KIND = kind;
+  for (const b of document.querySelectorAll("#kind button")) b.setAttribute("aria-pressed", String(b.dataset.kind === kind));
+  for (const el of document.querySelectorAll(".px")) el.hidden = kind !== "proxmox";
+  $("#u").autocomplete = kind === "proxmox" ? "off" : "username";
+}
+$("#kind").addEventListener("click", e => { const b = e.target.closest("button[data-kind]"); if (b) setKind(b.dataset.kind); });
+
+fetch("/api/sso/options").then(r => r.ok ? r.json() : null).then(o => {
+  if (!o) return;
+  if (o.remember && o.remember.allowed) {
+    $("#keeptext").textContent = t("Ingelogd blijven ({0} dagen)", o.remember.days);
+    $("#keepbox").hidden = false;
+  }
+  if (o.proxmox && o.proxmox.realms.length) {
+    $("#kind").hidden = false;
+    $("#realm").innerHTML = o.proxmox.realms.map(r => `<option>${r.replace(/[<>&"]/g, "")}</option>`).join("");
+  }
+  if (o.oidc) {
+    $("#oidc").textContent = t("Inloggen met {0}", o.oidc.label);
+    $("#oidc").hidden = false;
+    $("#oidc").onclick = () => {
+      const q = new URLSearchParams();
+      if (location.hash === "#sxy") q.set("then", "sxy");
+      if (keep()) q.set("remember", "1");
+      location.href = o.oidc.start + (q.toString() ? "?" + q : "");
+    };
+  }
+  $("#cf").hidden = !o.cloudflare;
+  $("#key").hidden = !(o.webauthn && keyHere());
+  $("#ssobox").hidden = !o.oidc && !o.cloudflare && $("#key").hidden;
+}).catch(() => {});
+
+$("#cf").onclick = async () => {
+  $("#msg").textContent = "";
+  try {
+    const r = await fetch("/api/sso/cloudflare" + (keep() ? "?remember=1" : ""), { method: "POST" });
+    if (r.ok) { location.href = next(); return; }
+    const body = await r.json().catch(() => ({}));
+    $("#msg").textContent = typeof body.detail === "string" ? body.detail : t("Inloggen mislukt");
+  } catch (err) { $("#msg").textContent = t("Geen verbinding met de tool"); }
+};
+
+// Beveiligingssleutel (WebAuthn): alleen op een adres met een naam; een browser staat het op een IP-adres niet toe.
+const b64ToBuf = s => Uint8Array.from(atob(s.replace(/-/g, "+").replace(/_/g, "/") + "===".slice((s.length + 3) % 4)), c => c.charCodeAt(0)).buffer;
+function bufToB64(b) { let s = ""; for (const x of new Uint8Array(b)) s += String.fromCharCode(x); return btoa(s).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, ""); }
+const keyHere = () => !!window.PublicKeyCredential && !/^\d+\.\d+\.\d+\.\d+$/.test(location.hostname) && !location.hostname.includes(":");
+const info = text => { $("#msg").textContent = text; $("#msg").className = "info"; };
+const fail = text => { $("#msg").textContent = text; $("#msg").className = ""; };
+function keyError(e) {
+  if (e && e.name === "NotAllowedError") return t("Geannuleerd, of de sleutel reageerde niet op tijd");
+  if (e && e.name === "SecurityError") return t("De browser staat beveiligingssleutels op dit adres niet toe (een IP-adres of een certificaatfout)");
+  return (e && e.message) || t("Inloggen mislukt");
+}
+async function keyFinish(s, remember) {   // de sleutel laten tekenen en het antwoord aan de tool geven
+  const o = s.publicKey;
+  const cred = await navigator.credentials.get({ publicKey: { ...o, challenge: b64ToBuf(o.challenge), allowCredentials: o.allowCredentials.map(c => ({ ...c, id: b64ToBuf(c.id) })) } });
+  const r = await fetch("/api/webauthn/login/finish", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({
+    state: s.state, id: cred.id, clientDataJSON: bufToB64(cred.response.clientDataJSON), authenticatorData: bufToB64(cred.response.authenticatorData),
+    signature: bufToB64(cred.response.signature), userHandle: cred.response.userHandle ? bufToB64(cred.response.userHandle) : null, remember }) });
+  if (r.ok) { location.href = next(); return; }
+  const body = await r.json().catch(() => ({}));
+  throw new Error(typeof body.detail === "string" ? body.detail : t("Inloggen mislukt"));
+}
+$("#key").onclick = async () => {
+  fail("");
+  $("#key").disabled = true;
+  try {
+    const r = await fetch("/api/webauthn/login/start", { method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ username: KIND === "password" ? $("#u").value.trim() : "" }) });
+    const s = await r.json().catch(() => ({}));
+    if (!r.ok) throw new Error(typeof s.detail === "string" ? s.detail : t("Inloggen mislukt"));
+    info(t("Raak je beveiligingssleutel aan…"));
+    await keyFinish(s, keep());
+  } catch (err) { fail(keyError(err)); }
+  $("#key").disabled = false;
+};
+
+$("#f").addEventListener("submit", async e => {
+  e.preventDefault();
+  $("#go").disabled = true;
+  fail("");
+  try {
+    const r = await fetch("/api/login", { method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ username: $("#u").value, password: $("#p").value, method: KIND, realm: KIND === "proxmox" ? $("#realm").value : null, remember: keep() }) });
+    if (r.ok) {
+      const body = await r.json().catch(() => ({}));
+      if (body.next === "webauthn") {   // het wachtwoord klopt; deze gebruiker heeft ook zijn sleutel nodig
+        $("#p").value = "";
+        info(t("Je wachtwoord klopt. Raak nu je beveiligingssleutel aan…"));
+        try { await keyFinish(body, keep()); return; } catch (err) { fail(keyError(err)); }
+        $("#go").disabled = false;
+        return;
+      }
+      location.href = next(); return;
+    }
+    const body = await r.json().catch(() => ({}));
+    $("#msg").textContent = typeof body.detail === "string" ? body.detail : t("Inloggen mislukt");
+    $("#p").value = "";
+    $("#p").focus();
+  } catch (err) { $("#msg").textContent = t("Geen verbinding met de tool"); }
+  $("#go").disabled = false;
+});
+</script>
+</body>
+</html>

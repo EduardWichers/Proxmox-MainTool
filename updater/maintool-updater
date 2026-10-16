@@ -1,0 +1,449 @@
+#!/usr/bin/env python3
+"""Bijwerken van de Proxmox Maintool met één bestand dat via de pagina is aangeleverd (het setup-bestand).
+
+    maintool-updater check BESTAND   controleert het bestand en meldt de uitkomst als JSON. Verandert niets.
+                                     De webdienst draait dit zelf, zonder bijzondere rechten.
+    maintool-updater apply           installeert het klaargezette bestand. Draait als root, gestart door systemd
+                                     (maintool-update.path) zodra de webdienst het startsein heeft neergezet.
+
+Uitgangspunten:
+  * De webdienst mag zijn eigen programmabestanden niet kunnen wijzigen; daarom doet dit aparte programma dat.
+  * Niets uit het aangeleverde bestand wordt hier uitgevoerd. Er worden alleen bestanden van de tool zelf
+    (de map app/ en de documentatie) vervangen. Alles wat dieper ingrijpt (systemd, Python-pakketten, dit
+    programma, het hulpscript op de nodes) moet gelijk zijn aan wat er al staat; anders weigert dit programma
+    en moet het setup-bestand op een node worden gedraaid (--update).
+  * Eerst alles controleren, dan pas iets aanraken. Van de oude versie blijft een kopie staan, en als de nieuwe
+    versie na de herstart niet goed antwoordt, gaat de oude vanzelf terug.
+  * Uitkomsten zijn codes, geen zinnen: de pagina vertaalt ze.
+
+Alleen de standaardbibliotheek van Python; dit bestand moet op zichzelf staan.
+"""
+import base64
+import fcntl
+import hashlib
+import io
+import json
+import os
+import re
+import shutil
+import ssl
+import stat
+import subprocess
+import sys
+import tarfile
+import tempfile
+import time
+import urllib.request
+import zlib
+from pathlib import Path
+
+# Een andere basismap en nagebootste herstart bestaan alleen om dit programma te kunnen testen, en gelden nooit
+# als het als root draait.
+TESTING = os.geteuid() != 0 and bool(os.environ.get("MAINTOOL_UPDATER_ROOT"))
+ROOT = os.environ["MAINTOOL_UPDATER_ROOT"] if TESTING else ""
+
+HOME = Path(ROOT + "/opt/maintool")
+APP = HOME / "app"
+INBOX = Path(ROOT + "/var/lib/maintool/update")        # van de webdienst: hier wordt alleen gelezen en opgeruimd
+UPLOAD = INBOX / "upload.bin"
+TRIGGER = INBOX / "apply"
+OUTBOX = Path(ROOT + "/var/lib/maintool-update")       # van root: de uitkomst voor de webdienst
+RESULT = OUTBOX / "result.json"
+BACKUPS = Path(ROOT + "/var/lib/maintool-backup")
+BASELINE = Path(ROOT + "/usr/local/lib/maintool/baseline.sums")
+LOCK = Path(ROOT + "/run/maintool-update.lock")
+LOG = Path(ROOT + "/var/log/maintool-update.log")
+TLS_CERT = Path(ROOT + "/etc/maintool/tls.crt")
+HEALTH_URL = "https://127.0.0.1:8443/login"
+
+MARKER = b"\n__PAYLOAD__\n"
+MAX_FILE = 20 * 2**20           # het aangeleverde bestand
+MAX_UNPACKED = 60 * 2**20       # alles uitgepakt bij elkaar
+MAX_MEMBER = 8 * 2**20
+MAX_MEMBERS = 200
+KEEP_BACKUPS = 3
+VERSION_RE = re.compile(r"^\d+(\.\d+){1,2}$")
+APP_FILE_RE = re.compile(r"^app/[A-Za-z0-9][A-Za-z0-9._-]*(/[A-Za-z0-9][A-Za-z0-9._-]*)*$")
+# Bestanden buiten app/ die in het pakket mogen zitten. DOCS worden mee vervangen; SYSTEM moet gelijk zijn aan wat
+# er al geïnstalleerd is (zie baseline.sums); de rest wordt genegeerd.
+DOCS = ("selftest.py", "LICENSE", "README.md", "THIRD-PARTY.md")
+SYSTEM = ("requirements.txt", "maintool.service", "install.sh", "updater/maintool-updater",
+          "updater/maintool-update.service", "updater/maintool-update.path")
+AGENT = "node/maintool-agent"
+OTHER = ("SHA256SUMS", "maintool.env.example", AGENT)
+REQUIRED = ("app/main.py", "app/VERSION", "app/static/index.html", "app/static/login.html", "selftest.py", "SHA256SUMS")
+HEALTH_TEXT = "Proxmox Maintool v{{VERSION}}"   # staat op het inlogscherm; daaraan is na de herstart de versie te zien
+
+
+class Refused(Exception):
+    """Het bestand wordt geweigerd. code is voor de pagina, detail (kort, technisch) voor het logboek."""
+
+    def __init__(self, code: str, detail: str = ""):
+        super().__init__(f"{code}: {detail}" if detail else code)
+        self.code, self.detail = code, detail
+
+
+def log(text: str):
+    try:
+        with LOG.open("a", encoding="utf-8") as f:
+            f.write(time.strftime("%F %T ") + text + "\n")
+    except OSError:
+        pass
+
+
+def version_key(text: str):
+    return tuple(int(part) for part in text.split("."))
+
+
+def sha256_file(path: Path) -> str:
+    digest = hashlib.sha256()
+    with open(path, "rb") as f:
+        for block in iter(lambda: f.read(1 << 20), b""):
+            digest.update(block)
+    return digest.hexdigest()
+
+
+def read_regular(path: Path, limit: int) -> bytes:
+    """Leest een gewoon bestand zonder een koppeling te volgen (de map is van een ander account)."""
+    try:
+        fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW)
+    except OSError as err:
+        raise Refused("no_file", str(err.strerror))
+    with os.fdopen(fd, "rb") as f:
+        info = os.fstat(f.fileno())
+        if not stat.S_ISREG(info.st_mode):
+            raise Refused("no_file", "geen gewoon bestand")
+        if info.st_size > limit:
+            raise Refused("too_big", f"{info.st_size} bytes")
+        return f.read(limit + 1)
+
+
+def installed_version() -> str:
+    try:
+        text = (APP / "VERSION").read_text(encoding="utf-8").strip()
+    except OSError:
+        return ""
+    return text if VERSION_RE.match(text) else ""
+
+
+def baseline() -> dict:
+    """De vingerafdrukken van de diep ingrijpende bestanden zoals ze nu geïnstalleerd zijn (naam -> sha256)."""
+    sums = {}
+    try:
+        for line in BASELINE.read_text(encoding="utf-8").splitlines():
+            digest, _, name = line.partition("  ")
+            if re.fullmatch(r"[0-9a-f]{64}", digest) and name:
+                sums[name.removeprefix("./")] = digest
+    except OSError:
+        pass
+    return sums
+
+
+def unpack(data: bytes, target: Path) -> dict:
+    """Controleert het aangeleverde bestand en pakt de tool uit in target. Geeft naam -> inhoud (bytes) terug.
+
+    Elke afwijking is reden om te weigeren: er wordt niets 'gerepareerd' of overgeslagen."""
+    if len(data) > MAX_FILE:
+        raise Refused("too_big", f"{len(data)} bytes")
+    cut = data.find(MARKER)
+    head = data[:cut] if cut >= 0 else b""
+    if cut < 0 or not head.startswith(b"#!/usr/bin/env bash\n") or b"Proxmox Maintool" not in head[:300]:
+        raise Refused("not_a_package", "geen setup-bestand van de Proxmox Maintool")
+    try:
+        packed = base64.b64decode(b"".join(data[cut + len(MARKER):].split()), validate=True)
+    except ValueError:
+        raise Refused("damaged", "de ingepakte tool is geen geldige base64")
+    try:
+        gunzip = zlib.decompressobj(wbits=31)
+        raw = gunzip.decompress(packed, MAX_UNPACKED + 1)
+        if len(raw) > MAX_UNPACKED or gunzip.unconsumed_tail:
+            raise Refused("too_big", "uitgepakt te groot")
+        if not gunzip.eof or gunzip.unused_data:
+            raise Refused("damaged", "de ingepakte tool is afgebroken of er staat iets achter")
+    except zlib.error as err:
+        raise Refused("damaged", f"uitpakken mislukt: {err}")
+
+    files = {}
+    try:
+        with tarfile.open(fileobj=io.BytesIO(raw), mode="r:") as tar:
+            for count, member in enumerate(tar, 1):
+                if count > MAX_MEMBERS:
+                    raise Refused("bad_content", "te veel bestanden")
+                name = member.name.removeprefix("./").rstrip("/")
+                if member.isdir():
+                    if name in ("", ".", "app", "node", "updater") or APP_FILE_RE.match(name):
+                        continue
+                    raise Refused("bad_content", f"onverwachte map: {member.name[:80]}")
+                if not member.isreg():
+                    raise Refused("bad_content", f"geen gewoon bestand: {member.name[:80]}")
+                if not (APP_FILE_RE.match(name) or name in DOCS or name in SYSTEM or name in OTHER):
+                    raise Refused("bad_content", f"onverwacht bestand: {member.name[:80]}")
+                if name in files:
+                    raise Refused("bad_content", f"dubbel bestand: {name}")
+                if member.size > MAX_MEMBER:
+                    raise Refused("too_big", name)
+                files[name] = tar.extractfile(member).read(MAX_MEMBER + 1)
+    except tarfile.TarError as err:
+        raise Refused("damaged", f"geen geldig archief: {err}")
+
+    for name in REQUIRED:
+        if name not in files:
+            raise Refused("bad_content", f"ontbreekt: {name}")
+    # De vingerafdrukken in het pakket moeten precies de bestanden in het pakket beschrijven.
+    listed = {}
+    for line in files["SHA256SUMS"].decode("utf-8", "replace").splitlines():
+        digest, _, name = line.partition("  ")
+        if not re.fullmatch(r"[0-9a-f]{64}", digest) or not name:
+            raise Refused("damaged", "onleesbare regel in SHA256SUMS")
+        listed[name.removeprefix("./")] = digest
+    actual = {name: hashlib.sha256(content).hexdigest() for name, content in files.items() if name != "SHA256SUMS"}
+    if listed != actual:
+        wrong = sorted(set(listed) ^ set(actual)) or sorted(n for n in actual if listed[n] != actual[n])
+        raise Refused("damaged", f"vingerafdruk klopt niet: {wrong[0]}")
+
+    version = files["app/VERSION"].decode("ascii", "replace").strip()
+    if not VERSION_RE.match(version):
+        raise Refused("bad_content", "ongeldig versienummer")
+    for name in ("app/main.py", "selftest.py"):
+        try:
+            compile(files[name].decode("utf-8"), name, "exec")   # alleen ontleden; er wordt niets uitgevoerd
+        except (SyntaxError, ValueError) as err:
+            raise Refused("bad_content", f"{name} is geen geldig Python: {err.__class__.__name__}")
+    if HEALTH_TEXT.encode() not in files["app/static/login.html"]:
+        raise Refused("bad_content", "het inlogscherm mist de versieregel")
+
+    for name, content in files.items():
+        path = target / name
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(content)
+    return files
+
+
+def inspect(path: Path, target: Path) -> dict:
+    """De volledige controle van een aangeleverd bestand; target krijgt de uitgepakte tool."""
+    data = read_regular(path, MAX_FILE)
+    files = unpack(data, target)
+    version, current = files["app/VERSION"].decode().strip(), installed_version()
+    if current and version_key(version) < version_key(current):
+        raise Refused("older", f"{version} is ouder dan {current}")
+    known = baseline()
+    if not known:
+        raise Refused("needs_setup", "geen gegevens over de huidige installatie (baseline.sums)")
+    sums = {name: hashlib.sha256(content).hexdigest() for name, content in files.items()}
+    differ = [name for name in SYSTEM if sums.get(name) != known.get(name)]
+    if differ:
+        raise Refused("needs_setup", "anders dan geïnstalleerd: " + ", ".join(differ))
+    warnings = []
+    if sums.get(AGENT) != known.get(AGENT):
+        warnings.append("agent_changed")
+    if version == current:
+        warnings.append("same_version")
+    return {"ok": True, "version": version, "current": current, "sha256": hashlib.sha256(data).hexdigest(),
+            "size": len(data), "files": len(files), "warnings": warnings}
+
+
+def check(path: str) -> int:
+    with tempfile.TemporaryDirectory(prefix="maintool-check-") as tmp:
+        try:
+            result = inspect(Path(path), Path(tmp))
+        except Refused as err:
+            result = {"ok": False, "code": err.code, "detail": err.detail, "current": installed_version()}
+        except Exception as err:  # noqa: BLE001 - een onverwachte fout is ook een weigering, nooit een goedkeuring
+            result = {"ok": False, "code": "internal", "detail": err.__class__.__name__, "current": installed_version()}
+    print(json.dumps(result))
+    return 0 if result["ok"] else 1
+
+
+# ---------------------------------------------------------------- installeren (root)
+
+def restart_service():
+    if TESTING:
+        subprocess.run(os.environ["MAINTOOL_UPDATER_RESTART"], shell=True, check=False, timeout=30)
+        return
+    # reset-failed: na een paar mislukte starts weigert systemd anders een nieuwe poging.
+    subprocess.run(["systemctl", "reset-failed", "maintool"], check=False, timeout=30, capture_output=True)
+    subprocess.run(["systemctl", "restart", "maintool"], check=False, timeout=90, capture_output=True)
+
+
+def own(path: Path, uid: int, gid: int, mode: int):
+    if not TESTING:
+        os.chown(path, uid, gid)
+    os.chmod(path, mode)
+
+
+def served_version() -> str:
+    """De versie die de draaiende tool nu op zijn inlogscherm toont; leeg als hij niet (goed) antwoordt."""
+    try:
+        if TESTING:
+            return Path(os.environ["MAINTOOL_UPDATER_HEALTH"]).read_text(encoding="utf-8").strip()
+        context = ssl.create_default_context(cafile=str(TLS_CERT))   # het eigen certificaat van de tool
+        context.verify_flags &= ~ssl.VERIFY_X509_STRICT              # dat certificaat heeft geen key usage-extensie
+        context.check_hostname = False
+        with urllib.request.urlopen(HEALTH_URL, context=context, timeout=5) as reply:
+            body = reply.read(200_000).decode("utf-8", "replace") if reply.status == 200 else ""
+        found = re.search(r"Proxmox Maintool v(\d+(?:\.\d+){1,2})", body)
+        return found.group(1) if found else ""
+    except Exception:  # noqa: BLE001 - niet bereikbaar telt als 'antwoordt niet'
+        return ""
+
+
+def healthy(version: str, seconds: int) -> bool:
+    deadline = time.monotonic() + seconds
+    while time.monotonic() < deadline:
+        if served_version() == version:
+            return True
+        time.sleep(0.2 if TESTING else 2)
+    return False
+
+
+def copy_tree(source: Path, target: Path, uid: int, gid: int):
+    """Kopieert gewone bestanden en mappen; eigenaar zoals de bestaande installatie, niets uitvoerbaar."""
+    target.mkdir(parents=True)
+    own(target, uid, gid, 0o755)
+    for entry in sorted(source.iterdir()):
+        if entry.name == "__pycache__" or entry.is_symlink():
+            continue
+        if entry.is_dir():
+            copy_tree(entry, target / entry.name, uid, gid)
+        elif entry.is_file():
+            shutil.copyfile(entry, target / entry.name)
+            own(target / entry.name, uid, gid, 0o644)
+
+
+def write_result(result: dict):
+    OUTBOX.mkdir(mode=0o755, parents=True, exist_ok=True)
+    result["time"] = int(time.time())
+    tmp = OUTBOX / "result.json.tmp"
+    tmp.write_text(json.dumps(result), encoding="utf-8")
+    os.chmod(tmp, 0o644)
+    os.replace(tmp, RESULT)
+    log("uitkomst: " + json.dumps(result))
+
+
+def remove(path: Path):
+    try:
+        path.unlink()            # volgt geen koppelingen
+    except IsADirectoryError:
+        shutil.rmtree(path, ignore_errors=True)
+    except OSError:
+        pass
+
+
+def apply() -> int:
+    LOCK.parent.mkdir(parents=True, exist_ok=True)
+    with open(LOCK, "w") as lock:
+        try:
+            fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except OSError:
+            return 0   # er loopt al een installatie
+        try:
+            wanted = json.loads(read_regular(TRIGGER, 4096).decode("utf-8")).get("sha256", "")
+        except (Refused, ValueError, AttributeError):
+            wanted = None
+        remove(TRIGGER)   # altijd weg, anders start systemd dit programma opnieuw
+        if wanted is None:
+            return 0
+        previous = installed_version()
+        log(f"start: installeren gevraagd (nu versie {previous or 'onbekend'})")
+        with tempfile.TemporaryDirectory(prefix="maintool-update-") as tmp:
+            try:
+                return install(Path(tmp), wanted, previous)
+            except Refused as err:
+                write_result({"ok": False, "code": err.code, "detail": err.detail, "previous": previous, "changed": False})
+            except Exception as err:  # noqa: BLE001
+                write_result({"ok": False, "code": "internal", "detail": err.__class__.__name__, "previous": previous,
+                              "changed": False})
+            finally:
+                remove(UPLOAD)
+        return 1
+
+
+def install(tmp: Path, wanted: str, previous: str) -> int:
+    info = inspect(UPLOAD, tmp / "pkg")           # opnieuw alles controleren: de controle van de webdienst telt hier niet
+    if info["sha256"] != wanted:
+        raise Refused("changed", "dit is niet het bestand dat bevestigd is")
+    version = info["version"]
+    if not APP.is_dir() or APP.is_symlink():
+        raise Refused("needs_setup", "de tool staat niet op de verwachte plek")
+    owner = APP.stat()
+
+    # 1. Kopie van wat er nu staat (de map app/ en de documentatie), buiten bereik van de webdienst.
+    BACKUPS.mkdir(mode=0o700, parents=True, exist_ok=True)
+    stamp, serial = time.strftime("%Y%m%d-%H%M%S"), 0
+    backup = BACKUPS / f"{stamp}-v{previous or 'onbekend'}"
+    while backup.exists():       # twee installaties in dezelfde seconde: de kopie krijgt een volgnummer
+        serial += 1
+        backup = BACKUPS / f"{stamp}.{serial}-v{previous or 'onbekend'}"
+    copy_tree(APP, backup / "app", 0, 0)
+    for name in DOCS:
+        if (HOME / name).is_file():
+            shutil.copyfile(HOME / name, backup / name)
+    for stale in sorted(p for p in BACKUPS.iterdir() if p.is_dir())[:-KEEP_BACKUPS]:
+        shutil.rmtree(stale, ignore_errors=True)
+
+    # 2. De nieuwe versie klaarzetten naast de oude. Tot hier is er aan de draaiende tool niets veranderd.
+    new, old = HOME / "app.new", HOME / "app.old"
+    for leftover in (new, old, HOME / "app.failed"):
+        if leftover.is_symlink() or leftover.is_file():
+            leftover.unlink()
+        elif leftover.is_dir():
+            shutil.rmtree(leftover)
+    copy_tree(tmp / "pkg" / "app", new, owner.st_uid, owner.st_gid)
+
+    # 3. Wisselen, herstarten en nakijken. Gaat hier iets mis, om welke reden ook, dan gaat de oude versie terug.
+    problem = None
+    try:
+        os.rename(APP, old)
+        os.rename(new, APP)
+        for name in DOCS:
+            shutil.copyfile(tmp / "pkg" / name, HOME / name)
+            os.chmod(HOME / name, 0o644)
+        log(f"versie {version} staat klaar; de tool wordt herstart")
+        restart_service()
+        if healthy(version, 45):
+            shutil.rmtree(old, ignore_errors=True)
+            write_result({"ok": True, "version": version, "previous": previous, "warnings": info["warnings"]})
+            return 0
+        problem = f"versie {version} antwoordde niet na de herstart"
+    except Exception as err:  # noqa: BLE001
+        problem = f"onverwachte fout bij het wisselen: {err.__class__.__name__}"
+
+    log(f"{problem}; versie {previous or 'onbekend'} wordt teruggezet")
+    if not TESTING:
+        tail = subprocess.run(["journalctl", "-u", "maintool", "-n", "15", "--no-pager", "-o", "cat"],
+                              capture_output=True, text=True, timeout=30, check=False).stdout
+        for line in tail.splitlines():
+            log("   | " + line[:300])
+    if old.is_dir():                       # de oude map is weggezet: zet hem terug op zijn plek
+        if APP.exists():
+            failed = HOME / "app.failed"
+            os.rename(APP, failed)
+            os.rename(old, APP)
+            shutil.rmtree(failed, ignore_errors=True)
+        else:
+            os.rename(old, APP)
+    for name in DOCS:
+        if (backup / name).is_file():
+            shutil.copyfile(backup / name, HOME / name)
+    shutil.rmtree(new, ignore_errors=True)
+    restart_service()
+    restored = bool(previous) and healthy(previous, 45)
+    write_result({"ok": False, "code": "not_starting", "detail": problem, "previous": previous, "changed": False,
+                  "restored": restored})
+    return 1
+
+
+def main(argv: list) -> int:
+    if len(argv) == 3 and argv[1] == "check":
+        return check(argv[2])
+    if len(argv) == 2 and argv[1] == "apply":
+        if not TESTING and os.geteuid() != 0:
+            print("apply moet als root draaien (via systemd)", file=sys.stderr)
+            return 2
+        return apply()
+    print(__doc__.strip().split("\n\n")[1], file=sys.stderr)
+    return 2
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv))

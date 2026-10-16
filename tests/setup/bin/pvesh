@@ -1,0 +1,38 @@
+#!/usr/bin/env bash
+# Stand-in for pvesh: answers from saved test data, remembers users/tokens, logs every call.
+echo "pvesh $*" >>"$CALLS"
+verb=$1; path=$2; shift 2
+tok() { python3 - "$FIX/tokens.json" "$@" <<'PY'
+import json, sys
+f, op, name = sys.argv[1], sys.argv[2], sys.argv[3]
+t = json.load(open(f))
+had = any(x["tokenid"] == name for x in t)
+t = [x for x in t if x["tokenid"] != name]
+if op == "add":
+    t.append({"tokenid": name, "privsep": 0, "expire": 0})
+json.dump(t, open(f, "w"))
+sys.exit(0 if (op == "add" or had) else 2)
+PY
+}
+case "$verb $path" in
+    "get /version")                 cat "$FIX/version.json" ;;
+    "get /cluster/status")          cat "$FIX/status.json" ;;
+    "get /cluster/nextid")          echo '"111"' ;;
+    "get /cluster/resources")       cat "$FIX/guests.json" ;;
+    "get /cluster/ha/resources")    cat "$FIX/ha.json" ;;
+    "get /nodes/"*"/storage")       case "$*" in *"--content rootdir"*) cat "$FIX/disks.json" ;; *"--content vztmpl"*) cat "$FIX/tmplstores.json" ;; *) exit 98 ;; esac ;;
+    "get /nodes/"*"/storage/"*"/content") cat "$FIX/tmplcontent.json" ;;
+    "get /nodes/"*"/aplinfo")       cat "$FIX/aplinfo.json" ;;
+    "get /nodes/"*"/network")       cat "$FIX/bridges.json" ;;
+    "get /nodes/"*"/time")          cat "$FIX/time.json" ;;
+    "get /access/users/maintool@pve")        if [[ -f $FIX/user.json ]]; then cat "$FIX/user.json"; else echo "no such user" >&2; exit 2; fi ;;
+    "get /access/users/maintool@pve/token")  if [[ -f $FIX/user.json ]]; then cat "$FIX/tokens.json"; else exit 2; fi ;;
+    "create /access/users")         echo '{"comment": "Proxmox Maintool", "enable": 1}' >"$FIX/user.json"; echo '[]' >"$FIX/tokens.json" ;;
+    "set /access/acl")              : ;;
+    "create /access/users/maintool@pve/token/"*)
+        tok add "${path##*/}"
+        echo "{\"full-tokenid\":\"maintool@pve!${path##*/}\",\"info\":{\"privsep\":\"0\"},\"value\":\"$FAKE_SECRET\"}" ;;
+    "delete /access/users/maintool@pve/token/"*) tok del "${path##*/}" ;;
+    "delete /access/users/maintool@pve")     rm -f "$FIX/user.json" ;;
+    *) echo "stand-in pvesh kent dit niet: $verb $path $*" >&2; exit 99 ;;
+esac

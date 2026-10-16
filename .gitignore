@@ -1,0 +1,14 @@
+# Gebouwde bestanden en wat Python zelf aanmaakt
+dist/
+__pycache__/
+*.pyc
+# Alleen op de container: de werknotities (met adressen en namen uit de eigen omgeving) en de namenlijst voor de bouw
+CLAUDE.md
+privacy-words.txt
+# Nooit in git: instellingen met geheimen, sleutels en de toestand van een draaiende tool
+maintool.env
+*.key
+*.pem
+state.json
+._*
+.DS_Store

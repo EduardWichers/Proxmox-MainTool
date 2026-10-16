@@ -1,0 +1,279 @@
+#!/bin/bash
+# maintool-agent - het enige wat de SSH-sleutel van de Maintool op deze node mag uitvoeren.
+#
+# sshd start dit script via command="..." in authorized_keys. Wat de tool vroeg staat in
+# SSH_ORIGINAL_COMMAND en wordt hieronder tegen een vaste lijst gelegd: geen eval, geen vrije shell.
+#
+#   ping                      levensteken
+#   info cts                  OS en aantal klaarstaande updates van elke draaiende CT op deze node
+#   refresh cts               idem, na 'apt-get update' in elke CT
+#   upgrade node              alle updates van deze node installeren (apt-get dist-upgrade + autoremove)
+#   upgrade ct <vmid>         alle updates in die CT installeren
+#   release ct <vmid>         die CT één Debian-release omhoog brengen (11 -> 12, 12 -> 13) en herstarten;
+#                             externe pakketbronnen die de nieuwe release niet kennen worden uitgezet
+#   status node|ct <vmid>     staat en log van de laatste update of release-upgrade
+#
+# Updates draaien als losse systemd-unit, zodat ze doorlopen als de SSH-verbinding wegvalt.
+set -uo pipefail
+export PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+export LC_ALL=C
+
+SELF=/usr/local/sbin/maintool-agent
+LOGDIR=/var/log/maintool
+IN_CT_PATH='export PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin'
+
+die() { echo "maintool-agent: $*" >&2; exit 2; }
+
+unit_for() { if [[ $1 == node ]]; then echo maintool-upgrade-node; else echo "maintool-upgrade-ct-$2"; fi; }
+log_for() { local u; u=$(unit_for "$@"); echo "$LOGDIR/${u#maintool-upgrade-}.log"; }
+
+ct_info() {  # $1 = vmid -> "ct <vmid> <updates|-> <os>"
+    local out
+    out=$(timeout 90 pct exec "$1" -- sh -c "$IN_CT_PATH"'
+        . /etc/os-release 2>/dev/null; echo "os=${PRETTY_NAME:-onbekend}"
+        if command -v apt-get >/dev/null 2>&1; then
+            echo "updates=$(apt-get -s dist-upgrade 2>/dev/null | grep -c "^Inst")"
+        else
+            echo "updates=-"
+        fi' </dev/null 2>/dev/null) || { echo "ct $1 - onbekend"; return; }
+    echo "ct $1 $(sed -n 's/^updates=//p' <<<"$out") $(sed -n 's/^os=//p' <<<"$out")"
+}
+
+all_cts() {  # $1 = info | refresh
+    local id
+    for id in $(pct list | awk 'NR > 1 && $2 == "running" { print $1 }'); do
+        if [[ $1 == refresh ]]; then
+            timeout 300 pct exec "$id" -- sh -c "$IN_CT_PATH"'; command -v apt-get >/dev/null 2>&1 && apt-get update -qq' \
+                </dev/null >/dev/null 2>&1
+        fi
+        ct_info "$id"
+    done
+}
+
+# Schrijft het script dat in de CT de release-upgrade doet (zie 'release ct'). Het is een eigen bestand,
+# zodat het met 'pct push' in de container gezet kan worden.
+write_release_script() {
+    cat >"$1" <<'RELEASE_EOF'
+#!/bin/sh
+# Door de maintool-agent in deze container gezet: brengt Debian één release omhoog.
+# Externe pakketbronnen die de nieuwe release niet kennen of niet te verifiëren zijn, worden uitgezet.
+# Lukt het met de bronnen van Debian zelf niet, dan worden de oude bronnen teruggezet en verandert er niets.
+export PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+R=${MAINTOOL_ROOT:-}  # alleen voor tests: een andere map als systeemwortel
+
+. "$R/etc/os-release"
+cur=$VERSION_CODENAME
+case "$cur" in
+    bullseye) next=bookworm; nextnum=12 ;;
+    bookworm) next=trixie; nextnum=13 ;;
+    *) echo "=== geen upgradepad vanaf ${PRETTY_NAME:-deze release}"; exit 91 ;;
+esac
+command -v apt-get >/dev/null 2>&1 || { echo "=== deze container gebruikt geen apt"; exit 90; }
+export DEBIAN_FRONTEND=noninteractive
+APT="apt-get -y -o Dpkg::Options::=--force-confdef -o Dpkg::Options::=--force-confold"
+backup="$R/root/apt-bronnen-$cur.tar"
+aptlog="$R/root/maintool-apt-update.log"
+off="$R/root/maintool-uitgezette-bronnen.txt"
+
+restore() {
+    tar -xf "$backup" -C "$R/"
+    rm -f "$R"/etc/apt/sources.list.d/*.uitgezet
+    apt-get update >/dev/null 2>&1
+}
+
+# Zet in de bronbestanden alles voor één bron (adres + suite) uit.
+disable() {
+    for f in $files; do
+        [ -f "$f" ] || continue
+        case "$f" in
+            *.sources)
+                if grep -qF "$1" "$f"; then mv "$f" "$f.uitgezet"; fi ;;
+            *)
+                awk -v uri="$1" -v suite="$2" '
+                    !/^[[:space:]]*#/ {
+                        for (i = 2; i < NF; i++)
+                            if (($i == uri || $i == uri "/" || $i "/" == uri) && $(i + 1) == suite) {
+                                print "# uitgezet door maintool bij de upgrade naar " suite ": " $0
+                                next
+                            }
+                    }
+                    { print }' "$f" >"$f.maintool" && cat "$f.maintool" >"$f"
+                rm -f "$f.maintool" ;;
+        esac
+    done
+}
+
+echo "=== stap 1 van 3: $cur eerst helemaal bijwerken"
+apt-get update || echo "=== let op: apt-get update gaf fouten; verder met de bestaande pakketlijsten"
+$APT dist-upgrade || { echo "=== bijwerken van $cur mislukt; er is niets aan de release gewijzigd"; exit 92; }
+
+echo "=== stap 2 van 3: pakketbronnen van $cur naar $next"
+files=$(ls "$R"/etc/apt/sources.list "$R"/etc/apt/sources.list.d/*.list "$R"/etc/apt/sources.list.d/*.sources 2>/dev/null)
+[ -n "$files" ] || { echo "=== geen pakketbronnen gevonden"; exit 95; }
+tar -cf "$backup" -C "$R/" etc/apt/sources.list etc/apt/sources.list.d 2>/dev/null
+sed -i "s/$cur/$next/g" $files
+: >"$off"
+try=0
+while :; do
+    apt-get update >"$aptlog" 2>&1
+    rc=$?
+    cat "$aptlog"
+    [ "$rc" -eq 0 ] && break
+    try=$((try + 1))
+    # De bronnen die apt weigert, als regels "adres suite".
+    bad=$(sed -n "s/^E: The repository '\(.*\) \(In\)\{0,1\}Release' .*/\1/p" "$aptlog" | sort -u)
+    changed=0
+    while read -r uri suite; do
+        [ -n "$uri" ] || continue
+        case "$uri" in *debian.org*) continue ;; esac  # de bronnen van Debian zelf nooit uitzetten
+        echo "=== externe bron uitgezet: $uri $suite"
+        echo "$uri $suite" >>"$off"
+        disable "$uri" "$suite"
+        changed=1
+    done <<EOF
+$bad
+EOF
+    if [ "$changed" -eq 0 ] || [ "$try" -ge 4 ]; then
+        restore
+        echo "=== de bronnen voor $next zijn niet bruikbaar; de oude zijn teruggezet en er is niets gewijzigd"
+        exit 93
+    fi
+done
+# Zonder Debians eigen bron voor de nieuwe release zou de upgrade maar half gebeuren.
+cand=$(apt-cache policy base-files | sed -n "s/^ *Candidate: \([0-9]*\).*/\1/p")
+if [ "$cand" != "$nextnum" ]; then
+    restore
+    echo "=== de bronnen van Debian leveren $next niet (base-files $cand); de oude zijn teruggezet en er is niets gewijzigd"
+    exit 96
+fi
+
+echo "=== stap 3 van 3: upgrade naar $next"
+$APT upgrade --without-new-pkgs && $APT dist-upgrade || { echo "=== upgrade naar $next afgebroken; zet de snapshot terug"; exit 94; }
+
+# Apache blijft na een upgrade de oude PHP-module gebruiken. Zet hem over op de nieuwe voordat de oude
+# wordt opgeruimd; anders voert Apache daarna geen PHP meer uit.
+keep=0
+if command -v a2query >/dev/null 2>&1; then
+    on=$(a2query -m 2>/dev/null | sed -n "s/^\(php[0-9][0-9.]*\) .*/\1/p" | head -n 1)
+    new=$(ls "$R/etc/apache2/mods-available" 2>/dev/null | sed -n "s/^\(php[0-9][0-9.]*\)\.load$/\1/p" | sort -V | tail -n 1)
+    if [ -n "$on" ] && [ -n "$new" ] && [ "$on" != "$new" ]; then
+        echo "=== Apache: PHP-module $on vervangen door $new"
+        a2dismod "$on" >/dev/null
+        a2enmod "$new" >/dev/null
+        if apache2ctl configtest; then
+            systemctl restart apache2
+        else
+            echo "=== Apache start niet met $new; $on is teruggezet en het opruimen wordt overgeslagen"
+            a2dismod "$new" >/dev/null
+            a2enmod "$on" >/dev/null
+            systemctl restart apache2
+            keep=1
+        fi
+    fi
+fi
+# Draait er een oudere PHP-FPM naast een nieuwere, dan wijst de webserver nog naar de oude.
+newfpm=$(dpkg-query -W -f '${Package}\n' 'php*-fpm' 2>/dev/null | sed -n "s/^php\([0-9][0-9.]*\)-fpm$/\1/p" | sort -V | tail -n 1)
+for unit in $(systemctl list-units --type=service --state=running --no-legend 'php*-fpm.service' 2>/dev/null | awk '{ print $1 }'); do
+    if [ -n "$newfpm" ] && [ "$unit" != "php$newfpm-fpm.service" ]; then
+        echo "=== $unit draait nog naast PHP $newfpm; stel de webserver in op de nieuwe en ruim daarna zelf op"
+        keep=1
+    fi
+done
+if [ "$keep" -eq 0 ]; then $APT autoremove; else echo "=== opruimen (autoremove) overgeslagen"; fi
+
+if [ -s "$off" ]; then
+    echo "=== uitgezette externe bronnen; wat daarvan komt krijgt geen updates meer:"
+    cat "$off"
+fi
+. "$R/etc/os-release"
+echo "=== de container draait nu $PRETTY_NAME"
+RELEASE_EOF
+}
+
+start() {  # node | ct <vmid> | release <vmid>
+    local unit; unit=$(unit_for "$@")
+    if systemctl is-active --quiet "$unit"; then echo running; return; fi
+    systemctl reset-failed "$unit" 2>/dev/null
+    mkdir -p "$LOGDIR"
+    : >"$(log_for "$@")"
+    systemd-run --quiet --unit="$unit" --description="Maintool update ($*)" "$SELF" __run "$@" || die "starten mislukt"
+    echo started
+}
+
+status() {  # node | ct <vmid> -> eerste regel de staat, daarna de log
+    local log; log=$(log_for "$@")
+    if systemctl is-active --quiet "$(unit_for "$@")"; then
+        echo "state=active"
+    elif [[ -s $log ]]; then
+        echo "state=finished exit=$(awk '/^=== einde: exit / { c = $4 } END { print c }' "$log")"
+    else
+        echo "state=none"
+    fi
+    [[ -f $log ]] && tail -n 400 "$log"
+    return 0
+}
+
+run() {  # intern: de eigenlijke update, gestart door systemd-run
+    local rc script
+    exec >"$(log_for "$@")" 2>&1
+    echo "=== start: $* op $(hostname), $(date '+%F %T')"
+    export DEBIAN_FRONTEND=noninteractive
+    if [[ $1 == node ]]; then
+        apt-get update || echo "=== let op: apt-get update gaf fouten; verder met de pakketlijsten die wel zijn bijgewerkt"
+        apt-get -y -o Dpkg::Options::=--force-confdef -o Dpkg::Options::=--force-confold dist-upgrade
+        rc=$?
+        [[ $rc != 0 ]] || apt-get -y autoremove
+    elif [[ $1 == release ]]; then
+        script=$(mktemp)
+        write_release_script "$script"
+        pct push "$2" "$script" /root/maintool-release.sh --perms 700 &&
+            pct exec "$2" -- sh /root/maintool-release.sh </dev/null
+        rc=$?
+        rm -f "$script"
+        if [[ $rc == 0 ]]; then
+            echo "=== container herstarten"
+            pct reboot "$2" || echo "=== herstarten mislukt; herstart de container zelf"
+        fi
+    else
+        pct exec "$2" -- sh -c "$IN_CT_PATH"'
+            command -v apt-get >/dev/null 2>&1 || { echo "deze container gebruikt geen apt; niet ondersteund"; exit 90; }
+            export DEBIAN_FRONTEND=noninteractive
+            apt-get update || echo "=== let op: apt-get update gaf fouten; verder met de pakketlijsten die wel zijn bijgewerkt"
+            apt-get -y -o Dpkg::Options::=--force-confdef -o Dpkg::Options::=--force-confold dist-upgrade &&
+                apt-get -y autoremove' </dev/null
+        rc=$?
+    fi
+    echo "=== einde: exit $rc $(date '+%F %T')"
+}
+
+if [[ -n ${SSH_ORIGINAL_COMMAND:-} ]]; then
+    read -r -a argv <<<"$SSH_ORIGINAL_COMMAND"
+    set -- "${argv[@]}"
+    [[ ${1:-} != __* ]] || die "niet toegestaan"
+elif [[ ${1:-} != __run ]]; then
+    die "alleen bedoeld voor de Maintool (via SSH)"
+fi
+
+verb=${1:-}; kind=${2:-}; id=${3:-}
+[[ $# -le 3 ]] || die "te veel argumenten"
+case "$kind" in
+    "" | node | cts) [[ -z $id ]] || die "onverwacht argument" ;;
+    ct | release) [[ $id =~ ^[1-9][0-9]{2,8}$ ]] || die "ongeldig VMID"
+        pct status "$id" >/dev/null 2>&1 || die "CT $id staat niet op deze node" ;;
+    *) die "onbekend doel" ;;
+esac
+
+case "$verb $kind" in
+    "ping ")        echo "maintool-agent 3 $(hostname)" ;;
+    "info cts")     all_cts info ;;
+    "refresh cts")  all_cts refresh ;;
+    "upgrade node") start node ;;
+    "upgrade ct")   start ct "$id" ;;
+    "release ct")   start release "$id" ;;
+    "status node")  status node ;;
+    "status ct")    status ct "$id" ;;
+    "__run node")   run node ;;
+    "__run ct")     run ct "$id" ;;
+    "__run release") run release "$id" ;;
+    *) die "onbekend commando" ;;
+esac

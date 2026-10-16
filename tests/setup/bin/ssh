@@ -1,0 +1,4 @@
+#!/usr/bin/env bash
+echo "ssh $*" >>"$CALLS"
+[[ -z ${SSH_FAIL:-} ]] || exit 255
+case "${*: -1}" in *"cat "*) echo "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIHostKeyVanEenAndereNodeVoorDeTest0000000000 root@node" ;; esac
