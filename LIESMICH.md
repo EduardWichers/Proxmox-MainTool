@@ -5,7 +5,7 @@ Erstellt von Eduard Wichers.
 
 Diese Anleitung gibt es auch auf Niederländisch ([LEESMIJ.md](LEESMIJ.md)) und Englisch ([README.md](README.md)). Alle drei liegen der Setup-Datei bei.
 
-**[Version 1.5 als ZIP herunterladen](../../archive/refs/tags/v1.5.zip)**: Der Dateiname enthält die Versionsnummer (die grüne Schaltfläche Code liefert immer …-main.zip). Diese ZIP kannst du in einem Schritt bei **Tool aktualisieren** übergeben. Entpackt liegt oben die Setup-Datei `maintool-setup.sh`, um das Tool auf einem Node zu installieren; der Rest ist der Quellcode. <!-- github -->
+**[Version 1.5.1 als ZIP herunterladen](../../archive/refs/tags/v1.5.1.zip)**: Der Dateiname enthält die Versionsnummer (die grüne Schaltfläche Code liefert immer …-main.zip). Diese ZIP kannst du in einem Schritt bei **Tool aktualisieren** übergeben. Entpackt liegt oben die Setup-Datei `maintool-setup.sh`, um das Tool auf einem Node zu installieren; der Rest ist der Quellcode. <!-- github -->
 
 ![Der Reiter Übersicht: die Nodes mit ihrer Auslastung, und die Container und VMs mit ihren Tags und Updates](docs/screenshots/de/overview.webp) <!-- github -->
 
@@ -277,16 +277,19 @@ Gut zu wissen:
 ## Konsole eines Nodes
 
 Administratoren haben auf jeder Node-Karte eine Schaltfläche **>_** für eine Konsole (Shell) auf diesem Node, in einem
-Fenster in der Seite. Proxmox gibt eine solche Konsole nur einem Konto des Nodes selbst (Realm pam), wie root, und
-nicht dem Zugriffsschlüssel des Tools. Beim ersten Mal meldest du dich deshalb mit einem solchen Konto an, mit dem Code
-aus deiner Authenticator-App, wenn das Konto Zwei-Faktor-Authentifizierung hat. Das Tool speichert das Passwort nicht
-und merkt sich die Anmeldung nur für diese Browsersitzung, höchstens eine Stunde; das Abmelden vom Tool vergisst sie
-auch. Unter Ereignisse steht, wer sich angemeldet und wer eine Konsole geöffnet hat.
+Fenster in der Seite. Proxmox gibt eine solche Konsole nicht dem Zugriffsschlüssel des Tools. Beim ersten Mal meldest
+du dich deshalb mit einem Konto an, das in Proxmox eine Konsole öffnen darf: Wähle @pam für ein Konto des Nodes selbst,
+wie root, oder @pve für ein Konto von Proxmox selbst. Hat das Konto Zwei-Faktor-Authentifizierung, gibst du auch den
+Code aus deiner Authenticator-App ein. Das Tool speichert das Passwort nicht und merkt sich die Anmeldung nur für diese
+Browsersitzung, höchstens eine Stunde; das Abmelden vom Tool vergisst sie auch. Dieser Browser merkt sich den Benutzer
+und den Realm, die du zuletzt gewählt hast, nie das Passwort. Unter Ereignisse steht, wer sich angemeldet und wer eine
+Konsole geöffnet hat.
 
-Ist root@pam in Proxmox ausgeschaltet (ein verbreiteter zusätzlicher Schutz), sagt das Fenster das. Verwende dann ein
-anderes pam-Konto, das eine Konsole öffnen darf: ein Linux-Konto auf den Nodes, das in Proxmox existiert (Reiter
-Benutzer) und das Recht Sys.Console auf den Nodes hat, zum Beispiel mit der Rolle PVEAdmin. Weil Proxmox nur root
-direkt hereinlässt, fragt die Konsole danach selbst noch einmal nach der Anmeldung.
+Nur root@pam bekommt sofort eine Shell. Jedes andere Konto braucht das Recht Sys.Console auf den Nodes (zum Beispiel mit
+der Rolle PVEAdmin oder Administrator), und die Konsole fragt dann selbst noch einmal nach der Anmeldung auf dem Node,
+zum Beispiel als root. Ist root@pam in Proxmox ausgeschaltet (ein verbreiteter zusätzlicher Schutz), sagt das Fenster
+das; verwende dann ein solches anderes Konto: @pam für ein Linux-Konto auf den Nodes, das in Proxmox existiert (Reiter
+Benutzer), oder @pve für ein Konto von Proxmox selbst.
 
 ## Tabellen anpassen
 

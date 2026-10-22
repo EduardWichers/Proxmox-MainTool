@@ -5,7 +5,7 @@ Made by Eduard Wichers.
 
 This explanation is also available in Dutch ([LEESMIJ.md](LEESMIJ.md)) and German ([LIESMICH.md](LIESMICH.md)). All three come with the setup file.
 
-**[Download version 1.5 as ZIP](../../archive/refs/tags/v1.5.zip)**: the file name contains the version number (the green Code button always gives …-main.zip). You can hand this ZIP to **Update the tool** in one go. Unpacked, the setup file `maintool-setup.sh` is at the top, to install the tool on a node; the rest is the source code. <!-- github -->
+**[Download version 1.5.1 as ZIP](../../archive/refs/tags/v1.5.1.zip)**: the file name contains the version number (the green Code button always gives …-main.zip). You can hand this ZIP to **Update the tool** in one go. Unpacked, the setup file `maintool-setup.sh` is at the top, to install the tool on a node; the rest is the source code. <!-- github -->
 
 ![The Overview tab: the nodes with their load, and the containers and VMs with their tags and updates](docs/screenshots/en/overview.webp) <!-- github -->
 
@@ -263,16 +263,18 @@ Good to know:
 ## Console of a node
 
 Administrators have a **>_** button on every node card for a console (shell) on that node, in a window in the page.
-Proxmox only gives such a console to an account of the node itself (realm pam), such as root, and not to the access
-key of the tool. The first time you therefore log in with such an account, with the code from your authenticator app
-if the account has two-factor authentication. The tool does not store the password and only remembers the login for
-this browser session, at most one hour; logging out of the tool forgets it too. Events shows who logged in and who
-opened a console.
+Proxmox does not give such a console to the access key of the tool. The first time you therefore log in with an account
+that may open a console in Proxmox: choose @pam for an account of the node itself, such as root, or @pve for an account
+of Proxmox itself. If the account has two-factor authentication, you also give the code from your authenticator app.
+The tool does not store the password and only remembers the login for this browser session, at most one hour; logging
+out of the tool forgets it too. This browser remembers the user and the realm you chose last, never the password.
+Events shows who logged in and who opened a console.
 
-If root@pam is switched off in Proxmox (a common extra protection), the window says so. Then use another pam account
-that may open a console: a Linux account on the nodes that exists in Proxmox (Users tab) and has the right Sys.Console
-on the nodes, for example with the role PVEAdmin. Because Proxmox only lets root in directly, the console then asks
-you to log in once more itself.
+Only root@pam gets a shell right away. Any other account needs the right Sys.Console on the nodes (for example with the
+role PVEAdmin or Administrator), and the console then asks you to log in on the node itself once more, for example as
+root. If root@pam is switched off in Proxmox (a common extra protection), the window says so; then use such another
+account: @pam for a Linux account on the nodes that exists in Proxmox (Users tab), or @pve for an account of Proxmox
+itself.
 
 ## Adjusting tables
 

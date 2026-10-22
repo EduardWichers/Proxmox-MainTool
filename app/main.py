@@ -1395,10 +1395,14 @@ MESSAGES = {
         ('Invalid layout of the tables', 'Ungültige Anordnung der Tabellen'),
     '{0} bestaat niet in Proxmox; een pam-account moet daar bestaan (tabblad Gebruikers) en als Linux-account op de nodes':
         ('{0} does not exist in Proxmox; a pam account has to exist there (Users tab) and as a Linux account on the nodes', '{0} existiert nicht in Proxmox; ein pam-Konto muss dort existieren (Reiter Benutzer) und als Linux-Konto auf den Nodes'),
-    '{0} staat in Proxmox uit (Datacenter, Permissions, Users). Zet het account daar aan, of log in met een ander pam-account dat een console mag openen':
-        ('{0} is switched off in Proxmox (Datacenter, Permissions, Users). Switch the account on there, or log in with another pam account that may open a console', '{0} ist in Proxmox ausgeschaltet (Datacenter, Permissions, Users). Schalte das Konto dort ein oder melde dich mit einem anderen pam-Konto an, das eine Konsole öffnen darf'),
-    '{0} is in Proxmox verlopen. Verleng het account (tabblad Gebruikers), of log in met een ander pam-account':
-        ('{0} has expired in Proxmox. Extend the account (Users tab), or log in with another pam account', '{0} ist in Proxmox abgelaufen. Verlängere das Konto (Reiter Benutzer) oder melde dich mit einem anderen pam-Konto an'),
+    '{0} staat in Proxmox uit (Datacenter, Permissions, Users). Zet het account daar aan, of log in met een ander account dat een console mag openen':
+        ('{0} is switched off in Proxmox (Datacenter, Permissions, Users). Switch the account on there, or log in with another account that may open a console', '{0} ist in Proxmox ausgeschaltet (Datacenter, Permissions, Users). Schalte das Konto dort ein oder melde dich mit einem anderen Konto an, das eine Konsole öffnen darf'),
+    '{0} is in Proxmox verlopen. Verleng het account (tabblad Gebruikers), of log in met een ander account':
+        ('{0} has expired in Proxmox. Extend the account (Users tab), or log in with another account', '{0} ist in Proxmox abgelaufen. Verlängere das Konto (Reiter Benutzer) oder melde dich mit einem anderen Konto an'),
+    '{0} bestaat niet in Proxmox; maak het account aan op het tabblad Gebruikers, in realm pve':
+        ('{0} does not exist in Proxmox; create the account on the Users tab, in realm pve', '{0} existiert nicht in Proxmox; lege das Konto auf dem Reiter Benutzer an, im Realm pve'),
+    'Vul een gebruiker van Proxmox in (realm pve) en zijn wachtwoord':
+        ('Fill in a Proxmox user (realm pve) and its password', 'Gib einen Benutzer von Proxmox ein (Realm pve) und sein Passwort'),
     'Ongeldige naam: hooguit 40 tekens, zonder < of >':
         ('Invalid name: at most 40 characters, without < or >', 'Ungültiger Name: höchstens 40 Zeichen, ohne < oder >'),
     "Er kunnen hooguit {0} schema's zijn":
@@ -5806,12 +5810,14 @@ def wa_login_finish(body: WaLoginIn, request: Request, response: Response):
 
 
 # ---------------------------------------------------------------- console van een node
-# Proxmox geeft een shell op een node alleen aan een account in realm pam (zoals root@pam), niet aan de
-# toegangssleutel van de tool. Een beheerder logt in het consolevenster daarom met zo'n account in; de tool vraagt
-# Proxmox daarmee een ticket en houdt dat alleen in het geheugen, voor deze browsersessie en hooguit een uur. Het
-# wachtwoord wordt nergens bewaard of gelogd.
+# Proxmox geeft een shell op een node niet aan de toegangssleutel van de tool, wel aan een account met het recht
+# Sys.Console op de node: root@pam meteen, elk ander account (pam of pve) na nog een keer inloggen op de node zelf. Een
+# beheerder logt in het consolevenster daarom met zo'n account in; de tool vraagt Proxmox daarmee een ticket en houdt
+# dat alleen in het geheugen, voor deze browsersessie en hooguit een uur. Het wachtwoord wordt nergens bewaard of gelogd.
 NODECON_TTL = 3600
-PAM_USER_RE = re.compile(r"^[a-z_][a-z0-9_.-]{0,31}$")
+PAM_USER_RE = re.compile(r"^[a-z_][a-z0-9_.-]{0,31}$")    # een Linux-gebruiker op de nodes
+PVE_NAME_RE = re.compile(r"^[A-Za-z0-9._-]{1,64}$")       # een gebruiker van Proxmox zelf (realm pve)
+CONSOLE_REALMS = ("pam", "pve")
 TFA_CODE_RE = re.compile(r"^[A-Za-z0-9-]{4,64}$")
 _nodecon = {}   # sha256(sessiecookie) -> {"owner", "user", "ticket", "csrf", "exp"} of, halverwege, {"owner", "user", "challenge", "exp"}
 nodecon_lock = threading.Lock()
@@ -5837,9 +5843,10 @@ def nodecon_view(entry) -> dict:
 
 
 class NodeConIn(BaseModel):
-    username: str = Field("root", max_length=40)
+    username: str = Field("root", max_length=70)
     password: str = Field("", max_length=300)
     code: str = Field("", max_length=64)
+    realm: str = Field("pam", pattern="^(pam|pve)$")   # pam: een account van de node zelf; pve: een account van Proxmox
 
 
 def nodecon_why(userid: str) -> str:
@@ -5849,15 +5856,18 @@ def nodecon_why(userid: str) -> str:
     try:
         u = pve.run(lambda api: api.access.users(userid).get())
     except HTTPException as err:
-        return "{0} bestaat niet in Proxmox; een pam-account moet daar bestaan (tabblad Gebruikers) en als Linux-account op de nodes".format(userid) \
-            if "no such user" in str(err.detail) else plain
+        if "no such user" not in str(err.detail):
+            return plain
+        if userid.endswith("@pve"):
+            return "{0} bestaat niet in Proxmox; maak het account aan op het tabblad Gebruikers, in realm pve".format(userid)
+        return "{0} bestaat niet in Proxmox; een pam-account moet daar bestaan (tabblad Gebruikers) en als Linux-account op de nodes".format(userid)
     if not isinstance(u, dict):
         return plain
     if u.get("enable") in (0, "0", False):
-        return "{0} staat in Proxmox uit (Datacenter, Permissions, Users). Zet het account daar aan, of log in met een ander pam-account dat een console mag openen".format(userid)
+        return "{0} staat in Proxmox uit (Datacenter, Permissions, Users). Zet het account daar aan, of log in met een ander account dat een console mag openen".format(userid)
     expire = int(u.get("expire") or 0)
     if expire and expire < time.time():
-        return "{0} is in Proxmox verlopen. Verleng het account (tabblad Gebruikers), of log in met een ander pam-account".format(userid)
+        return "{0} is in Proxmox verlopen. Verleng het account (tabblad Gebruikers), of log in met een ander account".format(userid)
     return plain
 
 
@@ -5868,7 +5878,8 @@ def nodecon_get(request: Request, user: str = Depends(admin)):
 
 @app.post("/api/nodeconsole/login")
 def nodecon_login(body: NodeConIn, request: Request, user: str = Depends(admin)):
-    """Inloggen bij Proxmox voor de console van de nodes, met een pam-account; met tweestapsverificatie in twee keer."""
+    """Inloggen bij Proxmox voor de console van de nodes, met een account in realm pam of pve; met
+    tweestapsverificatie in twee keer."""
     same_origin(request)
     source, key = source_of(request), nodecon_key(request)
     if login_guard.blocked(source):
@@ -5884,18 +5895,23 @@ def nodecon_login(body: NodeConIn, request: Request, user: str = Depends(admin))
         data = pve_ticket(pending["user"], f"{kind}:{code}", **{"tfa-challenge": pending["challenge"]})
         userid = pending["user"]
     else:
-        name = body.username.strip()
-        name = name[:-4] if name.endswith("@pam") else name
-        if not PAM_USER_RE.match(name) or not body.password:
+        name, realm = body.username.strip(), body.realm
+        for suffix in CONSOLE_REALMS:   # wie zelf @pam of @pve achter de naam typt, bedoelt die realm
+            if name.lower().endswith("@" + suffix):
+                name, realm = name[:-len(suffix) - 1], suffix
+        if realm == "pve":
+            if not PVE_NAME_RE.match(name) or not body.password:
+                raise HTTPException(400, "Vul een gebruiker van Proxmox in (realm pve) en zijn wachtwoord")
+        elif not PAM_USER_RE.match(name) or not body.password:
             raise HTTPException(400, "Vul een gebruiker van de node in (bijvoorbeeld root) en zijn wachtwoord")
-        userid = f"{name}@pam"
+        userid = f"{name}@{realm}"
         data = pve_ticket(userid, body.password)
     if data is None:
         login_guard.failed(source)
         with nodecon_lock:
             _nodecon.pop(key, None)
         raise HTTPException(403, nodecon_why(userid))   # geen 401: dat leest de pagina als "sessie verlopen" en stuurt naar de inlogpagina
-    if not isinstance(data.get("ticket"), str) or not str(data.get("username") or "").endswith("@pam"):
+    if not isinstance(data.get("ticket"), str) or not str(data.get("username") or "").endswith("@" + userid.rpartition("@")[2]):
         raise HTTPException(502, "Proxmox gaf geen bruikbaar antwoord bij het controleren van het account")
     if data.get("NeedTFA"):
         with nodecon_lock:
@@ -5940,7 +5956,7 @@ def node_termproxy(entry: dict, node: str) -> dict:
 
 @app.websocket("/api/nodeconsole/{node}")
 async def node_console(ws: WebSocket, node: str):
-    """Terminal naar de shell van een node, met het pam-account waarmee de beheerder in het consolevenster inlogde.
+    """Terminal naar de shell van een node, met het account (pam of pve) waarmee de beheerder in het consolevenster inlogde.
     Verder net als de console van een container (zie console)."""
     same_site = urllib.parse.urlsplit(ws.headers.get("origin", "")).netloc == ws.headers.get("host")
     user = read_token(ws.cookies.get(SESSION_COOKIE))

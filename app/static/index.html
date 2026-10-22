@@ -1837,10 +1837,11 @@ SYSTEM_DARK.addEventListener("change", () => { if (!BG) paint(null); });
 
 <dialog id="ncdlg">
   <h3 style="margin-top:0" id="nc-title">Console van een node</h3>
-  <p class="small">Proxmox geeft een shell op een node alleen aan een account van de node zelf (realm pam), zoals root. Log daarmee in. De tool bewaart je wachtwoord niet en onthoudt het inloggen alleen voor deze sessie, hooguit een uur.</p>
-  <p class="small">Staat root in Proxmox uit, gebruik dan een ander pam-account dat een console mag openen (het recht Sys.Console op de nodes). De console vraagt dan zelf nog een keer om in te loggen.</p>
+  <p class="small">Log in met een account dat in Proxmox een console op de nodes mag openen (het recht Sys.Console): kies @pam voor een account van de node zelf, zoals root, of @pve voor een account van Proxmox. De tool bewaart je wachtwoord niet en onthoudt het inloggen alleen voor deze sessie, hooguit een uur.</p>
+  <p class="small">Alleen root@pam krijgt meteen een shell. Met elk ander account vraagt de console zelf nog een keer om in te loggen op de node.</p>
   <div class="form wide">
-    <label for="nc-user" class="nc-pw">Gebruiker</label><div class="nc-pw"><input id="nc-user" value="root" maxlength="40" autocomplete="off" autocapitalize="none" spellcheck="false" style="width:160px"> <span class="small">@pam</span></div>
+    <label for="nc-user" class="nc-pw">Gebruiker</label><div class="nc-pw"><input id="nc-user" value="root" maxlength="64" autocomplete="off" autocapitalize="none" spellcheck="false" style="width:160px">
+      <select id="nc-realm" aria-label="Realm" title="pam: een gebruiker van de node zelf (Linux). pve: een gebruiker van Proxmox zelf."><option value="pam">@pam</option><option value="pve">@pve</option></select></div>
     <label for="nc-pass" class="nc-pw">Wachtwoord</label><input class="nc-pw" id="nc-pass" type="password" maxlength="300" autocomplete="off">
     <label for="nc-code" class="nc-code" hidden>Code</label><div class="nc-code" hidden><input id="nc-code" maxlength="64" autocomplete="one-time-code" inputmode="numeric" style="width:160px"> <span class="small">uit je authenticator-app, of een herstelcode</span></div>
   </div>
@@ -3745,7 +3746,6 @@ const I18N = {
   "Alle beveiligingssleutels van deze gebruiker weghalen, bijvoorbeeld als hij zijn sleutel kwijt is": "Remove all security keys of this user, for example when the key is lost",
   "Sleutels weghalen": "Remove keys",
   "Console van een node": "Console of a node",
-  "Proxmox geeft een shell op een node alleen aan een account van de node zelf (realm pam), zoals root. Log daarmee in. De tool bewaart je wachtwoord niet en onthoudt het inloggen alleen voor deze sessie, hooguit een uur.": "Proxmox only gives a shell on a node to an account of the node itself (realm pam), such as root. Log in with it. The tool does not store your password and only remembers the login for this session, at most one hour.",
   "uit je authenticator-app, of een herstelcode": "from your authenticator app, or a recovery code",
   "Console van deze node (shell)": "Console of this node (shell)",
   "Console van deze node": "Console of this node",
@@ -3803,7 +3803,6 @@ const I18N = {
   "Alle kolommen terug en de tabellen van dit tabblad op hun eigen plek": "All columns back and the tables of this tab in their own place",
   "Indeling niet bewaard: {0}": "Layout not saved: {0}",
   "Er moet minstens één kolom zichtbaar blijven": "At least one column has to stay visible",
-  "Staat root in Proxmox uit, gebruik dan een ander pam-account dat een console mag openen (het recht Sys.Console op de nodes). De console vraagt dan zelf nog een keer om in te loggen.": "If root is switched off in Proxmox, use another pam account that may open a console (the right Sys.Console on the nodes). The console then asks you to log in once more itself.",
   "Node {0} antwoordt niet via de Proxmox-API (het cluster zoekt hem op {1}); kijk /etc/hosts op die node na": "Node {0} does not answer through the Proxmox API (the cluster looks for it at {1}); check /etc/hosts on that node",
   "Een node antwoordt niet via de API (vaak een oud adres in /etc/hosts)": "A node does not answer through the API (often an old address in /etc/hosts)",
   "Deze node antwoordt niet via de Proxmox-API: {0} zoekt hem op {1} en krijgt geen antwoord.": "This node does not answer through the Proxmox API: {0} looks for it at {1} and gets no answer.",
@@ -3918,7 +3917,10 @@ const I18N = {
   "Menu: versie {0} is beschikbaar": "Menu: version {0} is available",
   "Versie {0} beschikbaar": "Version {0} available",
   "Versie {0} van de Proxmox Maintool staat op GitHub. Deze tool draait versie {1}.": "Version {0} of the Proxmox Maintool is on GitHub. This tool runs version {1}.",
-  "Geen melding meer voor versie {0}. Bijwerken kan altijd via het menu, bij Tool bijwerken.": "No more message for version {0}. You can always update through the menu, under Update the tool."
+  "Geen melding meer voor versie {0}. Bijwerken kan altijd via het menu, bij Tool bijwerken.": "No more message for version {0}. You can always update through the menu, under Update the tool.",
+  "Log in met een account dat in Proxmox een console op de nodes mag openen (het recht Sys.Console): kies @pam voor een account van de node zelf, zoals root, of @pve voor een account van Proxmox. De tool bewaart je wachtwoord niet en onthoudt het inloggen alleen voor deze sessie, hooguit een uur.": "Log in with an account that may open a console on the nodes in Proxmox (the right Sys.Console): choose @pam for an account of the node itself, such as root, or @pve for an account of Proxmox. The tool does not store your password and only remembers the login for this session, at most one hour.",
+  "Alleen root@pam krijgt meteen een shell. Met elk ander account vraagt de console zelf nog een keer om in te loggen op de node.": "Only root@pam gets a shell right away. With any other account the console itself asks you to log in on the node once more.",
+  "pam: een gebruiker van de node zelf (Linux). pve: een gebruiker van Proxmox zelf.": "pam: a user of the node itself (Linux). pve: a user of Proxmox itself."
  },
  "de": {
   "Vernieuwen: haalt het overzicht direct opnieuw op bij Proxmox": "Aktualisieren: holt die Übersicht sofort neu von Proxmox",
@@ -5653,7 +5655,6 @@ const I18N = {
   "Alle beveiligingssleutels van deze gebruiker weghalen, bijvoorbeeld als hij zijn sleutel kwijt is": "Alle Sicherheitsschlüssel dieses Benutzers entfernen, zum Beispiel wenn der Schlüssel verloren ist",
   "Sleutels weghalen": "Schlüssel entfernen",
   "Console van een node": "Konsole eines Nodes",
-  "Proxmox geeft een shell op een node alleen aan een account van de node zelf (realm pam), zoals root. Log daarmee in. De tool bewaart je wachtwoord niet en onthoudt het inloggen alleen voor deze sessie, hooguit een uur.": "Proxmox gibt eine Shell auf einem Node nur einem Konto des Nodes selbst (Realm pam), wie root. Melde dich damit an. Das Tool speichert dein Passwort nicht und merkt sich die Anmeldung nur für diese Sitzung, höchstens eine Stunde.",
   "uit je authenticator-app, of een herstelcode": "aus deiner Authenticator-App, oder ein Wiederherstellungscode",
   "Console van deze node (shell)": "Konsole dieses Nodes (Shell)",
   "Console van deze node": "Konsole dieses Nodes",
@@ -5712,7 +5713,6 @@ const I18N = {
   "Alle kolommen terug en de tabellen van dit tabblad op hun eigen plek": "Alle Spalten zurück und die Tabellen dieses Reiters an ihrem eigenen Platz",
   "Indeling niet bewaard: {0}": "Anordnung nicht gespeichert: {0}",
   "Er moet minstens één kolom zichtbaar blijven": "Mindestens eine Spalte muss sichtbar bleiben",
-  "Staat root in Proxmox uit, gebruik dan een ander pam-account dat een console mag openen (het recht Sys.Console op de nodes). De console vraagt dan zelf nog een keer om in te loggen.": "Ist root in Proxmox ausgeschaltet, verwende ein anderes pam-Konto, das eine Konsole öffnen darf (das Recht Sys.Console auf den Nodes). Die Konsole fragt dann selbst noch einmal nach der Anmeldung.",
   "Node {0} antwoordt niet via de Proxmox-API (het cluster zoekt hem op {1}); kijk /etc/hosts op die node na": "Node {0} antwortet nicht über die Proxmox-API (der Cluster sucht ihn unter {1}); prüfe /etc/hosts auf diesem Node",
   "Een node antwoordt niet via de API (vaak een oud adres in /etc/hosts)": "Ein Node antwortet nicht über die API (oft eine alte Adresse in /etc/hosts)",
   "Deze node antwoordt niet via de Proxmox-API: {0} zoekt hem op {1} en krijgt geen antwoord.": "Dieser Node antwortet nicht über die Proxmox-API: {0} sucht ihn unter {1} und bekommt keine Antwort.",
@@ -5827,7 +5827,10 @@ const I18N = {
   "Menu: versie {0} is beschikbaar": "Menü: Version {0} ist verfügbar",
   "Versie {0} beschikbaar": "Version {0} verfügbar",
   "Versie {0} van de Proxmox Maintool staat op GitHub. Deze tool draait versie {1}.": "Version {0} des Proxmox Maintool ist auf GitHub. Dieses Tool läuft mit Version {1}.",
-  "Geen melding meer voor versie {0}. Bijwerken kan altijd via het menu, bij Tool bijwerken.": "Keine Meldung mehr für Version {0}. Aktualisieren kannst du immer über das Menü, unter Tool aktualisieren."
+  "Geen melding meer voor versie {0}. Bijwerken kan altijd via het menu, bij Tool bijwerken.": "Keine Meldung mehr für Version {0}. Aktualisieren kannst du immer über das Menü, unter Tool aktualisieren.",
+  "Log in met een account dat in Proxmox een console op de nodes mag openen (het recht Sys.Console): kies @pam voor een account van de node zelf, zoals root, of @pve voor een account van Proxmox. De tool bewaart je wachtwoord niet en onthoudt het inloggen alleen voor deze sessie, hooguit een uur.": "Melde dich mit einem Konto an, das in Proxmox eine Konsole auf den Nodes öffnen darf (das Recht Sys.Console): Wähle @pam für ein Konto des Nodes selbst, wie root, oder @pve für ein Konto von Proxmox. Das Tool speichert dein Passwort nicht und merkt sich die Anmeldung nur für diese Sitzung, höchstens eine Stunde.",
+  "Alleen root@pam krijgt meteen een shell. Met elk ander account vraagt de console zelf nog een keer om in te loggen op de node.": "Nur root@pam bekommt sofort eine Shell. Mit jedem anderen Konto fragt die Konsole selbst noch einmal nach der Anmeldung auf dem Node.",
+  "pam: een gebruiker van de node zelf (Linux). pve: een gebruiker van Proxmox zelf.": "pam: ein Benutzer des Nodes selbst (Linux). pve: ein Benutzer von Proxmox selbst."
  }
 };
 const LOCALE = { nl: "nl-NL", en: "en-GB", de: "de-DE" }[LANG];
@@ -9444,9 +9447,20 @@ $("#nl-save").onclick = () => {
 };
 
 // ------------------------------------------------------------------ console van een node
-// Proxmox geeft een shell op een node alleen aan een account van de node zelf (realm pam), zoals root. Wie dat de
-// eerste keer opent, logt daarmee in; de tool onthoudt dat alleen voor deze sessie, hooguit een uur.
+// Proxmox geeft een shell op een node aan een account met het recht Sys.Console: een account van de node zelf (pam),
+// zoals root, of een account van Proxmox (pve). Wie de console de eerste keer opent, logt daarmee in; de tool onthoudt
+// dat alleen voor deze sessie, hooguit een uur. Deze browser onthoudt de gebruiker en de realm, nooit het wachtwoord.
+const NC_KEY = "maintool_nodeconsole";
 let NCN = null, ncCode = false;
+try {
+  const saved = JSON.parse(localStorage.getItem(NC_KEY) || "null");
+  if (saved && typeof saved.user === "string" && saved.user) $("#nc-user").value = saved.user.slice(0, 64);
+  if (saved && ["pam", "pve"].includes(saved.realm)) $("#nc-realm").value = saved.realm;
+} catch (e) {}
+$("#nc-user").addEventListener("input", () => {   // wie zelf @pam of @pve typt, kiest daarmee de realm
+  const m = $("#nc-user").value.match(/^(.*)@(pam|pve)$/i);
+  if (m) { $("#nc-user").value = m[1]; $("#nc-realm").value = m[2].toLowerCase(); }
+});
 async function openNodeConsole(node) {
   let s;
   try { s = await api("/api/nodeconsole"); } catch (e) { toast(e.message, "err"); return; }
@@ -9473,12 +9487,14 @@ $("#nc-cancel").onclick = () => $("#ncdlg").close();
 $("#ncdlg").addEventListener("close", () => { $("#nc-pass").value = $("#nc-code").value = ""; });
 $("#ncdlg").addEventListener("keydown", e => { if (e.key === "Enter" && e.target.matches("input")) { e.preventDefault(); $("#nc-go").click(); } });
 $("#nc-go").onclick = async () => {
-  const body = ncCode ? { code: $("#nc-code").value.trim() } : { username: $("#nc-user").value.trim(), password: $("#nc-pass").value };
+  const body = ncCode ? { code: $("#nc-code").value.trim() }
+    : { username: $("#nc-user").value.trim(), password: $("#nc-pass").value, realm: $("#nc-realm").value };
   if (ncCode ? !body.code : !body.username || !body.password) { ncMsg(ncCode ? t("Vul de code in") : t("Vul een gebruiker en zijn wachtwoord in")); return; }
   $("#nc-go").disabled = true;
   ncMsg("");
   try {
     const s = await api("/api/nodeconsole/login", { method: "POST", body: JSON.stringify(body) });
+    if (!ncCode) try { localStorage.setItem(NC_KEY, JSON.stringify({ user: body.username, realm: body.realm })); } catch (e) {}
     if (s.need_code) { ncStep(true); $("#nc-pass").value = ""; $("#nc-code").focus(); }
     else if (s.ready) {
       $("#ncdlg").close();

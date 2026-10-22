@@ -5,7 +5,7 @@ Gemaakt door Eduard Wichers.
 
 Deze uitleg is er ook in het Engels ([README.md](README.md)) en het Duits ([LIESMICH.md](LIESMICH.md)). Alle drie komen mee met het setup-bestand.
 
-**[Download versie 1.5 als ZIP](../../archive/refs/tags/v1.5.zip)**: de bestandsnaam bevat het versienummer (de groene knop Code geeft altijd …-main.zip). Deze ZIP kun je in één keer aanleveren bij **Tool bijwerken**. Uitgepakt staat bovenin het setup-bestand `maintool-setup.sh`, om de tool op een node te installeren; de rest is de broncode. <!-- github -->
+**[Download versie 1.5.1 als ZIP](../../archive/refs/tags/v1.5.1.zip)**: de bestandsnaam bevat het versienummer (de groene knop Code geeft altijd …-main.zip). Deze ZIP kun je in één keer aanleveren bij **Tool bijwerken**. Uitgepakt staat bovenin het setup-bestand `maintool-setup.sh`, om de tool op een node te installeren; de rest is de broncode. <!-- github -->
 
 ![Het tabblad Overzicht: de nodes met hun belasting, en de containers en VM's met hun labels en updates](docs/screenshots/nl/overview.webp) <!-- github -->
 
@@ -254,16 +254,18 @@ Goed om te weten:
 ## Console van een node
 
 Beheerders hebben op elke nodekaart een knop **>_** voor een console (shell) op die node, in een venster in de pagina.
-Proxmox geeft zo'n console alleen aan een account van de node zelf (realm pam), zoals root, en niet aan de
-toegangssleutel van de tool. De eerste keer log je daarom met zo'n account in, met de code uit je authenticator-app als
-het account tweestapsverificatie heeft. De tool bewaart het wachtwoord niet en onthoudt het inloggen alleen voor deze
-browsersessie, hooguit een uur; uitloggen uit de tool vergeet het ook. Bij Events staat wie inlogde en wie een console
-opende.
+Proxmox geeft zo'n console niet aan de toegangssleutel van de tool. De eerste keer log je daarom in met een account dat
+in Proxmox een console mag openen: kies @pam voor een account van de node zelf, zoals root, of @pve voor een account van
+Proxmox zelf. Heeft het account tweestapsverificatie, dan geef je ook de code uit je authenticator-app. De tool bewaart
+het wachtwoord niet en onthoudt het inloggen alleen voor deze browsersessie, hooguit een uur; uitloggen uit de tool
+vergeet het ook. Deze browser onthoudt de gebruiker en de realm die je het laatst koos, nooit het wachtwoord. Bij
+Events staat wie inlogde en wie een console opende.
 
-Staat root@pam in Proxmox uit (een veelgebruikte extra beveiliging), dan zegt het venster dat. Gebruik dan een ander
-pam-account dat een console mag openen: een Linux-account op de nodes, dat in Proxmox (tabblad Gebruikers) bestaat en
-het recht Sys.Console op de nodes heeft, bijvoorbeeld met de rol PVEAdmin. Omdat Proxmox alleen root meteen binnenlaat,
-vraagt de console daarna zelf nog een keer om in te loggen.
+Alleen root@pam krijgt meteen een shell. Elk ander account heeft het recht Sys.Console op de nodes nodig (bijvoorbeeld
+met de rol PVEAdmin of Administrator), en de console vraagt dan zelf nog een keer om in te loggen op de node,
+bijvoorbeeld als root. Staat root@pam in Proxmox uit (een veelgebruikte extra beveiliging), dan zegt het venster dat;
+gebruik dan zo'n ander account: @pam voor een Linux-account op de nodes dat in Proxmox bestaat (tabblad Gebruikers), of
+@pve voor een account van Proxmox zelf.
 
 ## Tabellen aanpassen
 
