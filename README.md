@@ -7,6 +7,8 @@ This explanation is also available in Dutch ([LEESMIJ.md](LEESMIJ.md)) and Germa
 
 **[Download version 1.4.1 as ZIP](../../archive/refs/tags/v1.4.1.zip)**: the file name contains the version number (the green Code button always gives …-main.zip). You can hand this ZIP to **Update the tool** in one go. Unpacked, the setup file `maintool-setup.sh` is at the top, to install the tool on a node; the rest is the source code. <!-- github -->
 
+![The Overview tab: the nodes with their load, and the containers and VMs with their tags and updates](docs/screenshots/en/overview.webp) <!-- github -->
+
 ## Read this first
 
 - **The tool gets administrator rights on your whole cluster.** It uses an access key (API token) with the
@@ -297,6 +299,8 @@ minute (from Proxmox), that of a guest is updated every 2 seconds. The traffic t
 disks of the guests; for Ceph the box shows the traffic of the whole cluster. Click a guest to show it in the
 overview. Hide folds the topology away; this browser remembers that.
 
+![The topology on the Networks tab, with the traffic over every connection](docs/screenshots/en/topology.webp) <!-- github -->
+
 ## Tags
 
 The tags of containers and VMs appear next to their name, in the same colours as in Proxmox (you set your own colours
@@ -319,6 +323,8 @@ appears with a warning and the choice of how to protect yourself:
 
 You must tick that you understand the risk. For a node, Proxmox itself cannot make a backup; there it stays at the
 warning.
+
+![Before an update: the window with the choice of a backup first](docs/screenshots/en/update.webp) <!-- github -->
 
 With the clock button next to Check for updates (Overview tab) you set up **automatic updates**, with one or more
 schedules. Each schedule has its own name, how often (every day, every week, every other week or every month), on
@@ -365,6 +371,8 @@ A guest in HA is watched by Proxmox: if it hangs, HA restarts it, and if its nod
 after a few minutes. The HA tab shows whether the cluster has a majority, which node controls HA, how HA is doing per
 node (for example active or in maintenance mode) and which guests are in it, with their state, what HA should do
 with them and how often HA may try again.
+
+![The HA tab: how HA is doing per node, the guests in HA and the HA rules](docs/screenshots/en/ha.webp) <!-- github -->
 
 - **Add** with the plus button on the tab, or in the overview through Action for selection, Add to HA. You choose one
   or more guests and what HA does with them. By default everything stays as it is: a guest that is running gets On, a
@@ -420,6 +428,8 @@ only the time window needs the tool.
   right after the maintenance.
 
 ## Set up Ceph (wrench on the Storage tab)
+
+![The Storage tab: the storages, how full they are, and Ceph with its pools](docs/screenshots/en/storage.webp) <!-- github -->
 
 - **Overview**: the health, the network, the version per node, and per node the monitor, the manager, the OSDs and the
   free disks. If Ceph is not running yet, this shows the steps to build it. You install the packages per node in the
@@ -500,6 +510,8 @@ number of days. With Default everything goes back to how it was.
 The colour of the tabs, the list of points of attention and the dashboard follow these settings. The tool works out
 the points of attention again about once a minute.
 
+![The Events tab: the points of attention and what has happened](docs/screenshots/en/events.webp) <!-- github -->
+
 ## Dashboard for on the wall (SXY)
 
 The SXY button in the header opens a dark, full-screen dashboard. Everything on it is a widget: per node a gauge for
@@ -507,6 +519,8 @@ processor and memory, graphs of the last hour (processor, memory, network traffi
 of attention, the busiest guests, the storage and a clock. Under VMs and CTs you can also choose guests that get a
 widget of their own: with gauges for processor and memory, whether it is running, on which node, for how long, and
 for a container how full its disk is.
+
+![The SXY dashboard for on the wall](docs/screenshots/en/sxy.webp) <!-- github -->
 
 - **Changing the layout**: open the lock at the top right. Drag a widget to another place; the others move along, like
   widgets on a phone. With the corner at the bottom right you make a widget larger or smaller, with the cross you

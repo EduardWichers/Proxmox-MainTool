@@ -7,6 +7,8 @@ Deze uitleg is er ook in het Engels ([README.md](README.md)) en het Duits ([LIES
 
 **[Download versie 1.4.1 als ZIP](../../archive/refs/tags/v1.4.1.zip)**: de bestandsnaam bevat het versienummer (de groene knop Code geeft altijd …-main.zip). Deze ZIP kun je in één keer aanleveren bij **Tool bijwerken**. Uitgepakt staat bovenin het setup-bestand `maintool-setup.sh`, om de tool op een node te installeren; de rest is de broncode. <!-- github -->
 
+![Het tabblad Overzicht: de nodes met hun belasting, en de containers en VM's met hun labels en updates](docs/screenshots/nl/overview.webp) <!-- github -->
+
 ## Lees dit eerst
 
 - **De tool krijgt beheerdersrechten op je hele cluster.** Hij gebruikt een toegangssleutel (API-token) met de
@@ -287,6 +289,8 @@ van de laatste minuut (uit Proxmox), dat van een guest wordt elke 2 seconden bij
 is een schatting uit de schijven van de guests; bij Ceph staat het verkeer van het hele cluster in het vak. Klik op
 een guest om hem in het overzicht te tonen. Met Verbergen klap je de topologie in; deze browser onthoudt dat.
 
+![De topologie op het tabblad Netwerken, met het verkeer over elke verbinding](docs/screenshots/nl/topology.webp) <!-- github -->
+
 ## Labels
 
 De labels (tags) van containers en VM's staan naast hun naam, in dezelfde kleuren als in Proxmox (eigen kleuren stel
@@ -309,6 +313,8 @@ een venster met een waarschuwing en de keuze hoe je je indekt:
 
 Je moet aanvinken dat je het risico begrijpt. Bij een node kan Proxmox zelf geen back-up maken; daar blijft het bij de
 waarschuwing.
+
+![Voor een update: het venster met de keuze voor eerst een back-up](docs/screenshots/nl/update.webp) <!-- github -->
 
 Met de knop met de klok naast Zoek updates (tabblad Overzicht) stel je **automatisch bijwerken** in, met een of meer
 schema's. Elk schema heeft een eigen naam, hoe vaak (elke dag, elke week, om de week of elke maand), op welke dag en
@@ -354,6 +360,8 @@ Een guest in HA wordt door Proxmox bewaakt: loopt hij vast, dan herstart HA hem,
 hem na een paar minuten op een andere node. Het tabblad HA laat zien of het cluster een meerderheid heeft, welke node
 HA aanstuurt, hoe HA er per node voor staat (bijvoorbeeld in bedrijf of in onderhoudsmodus) en welke guests erin staan,
 met hun toestand, wat HA met ze moet doen en hoe vaak HA opnieuw mag proberen.
+
+![Het tabblad HA: hoe HA er per node voor staat, de guests in HA en de HA-regels](docs/screenshots/nl/ha.webp) <!-- github -->
 
 - **Toevoegen** met de plusknop op het tabblad, of in het overzicht via Actie voor selectie, Aan HA toevoegen. Je
   kiest een of meer guests en wat HA met ze doet. Standaard blijft alles zoals het is: een guest die aan staat komt op
@@ -409,6 +417,8 @@ tijdvenster heeft de tool nodig.
   onderhoud meteen weer aan.
 
 ## Ceph instellen (steeksleutel op het tabblad Opslag)
+
+![Het tabblad Opslag: de opslag, hoe vol die is, en Ceph met zijn pools](docs/screenshots/nl/storage.webp) <!-- github -->
 
 - **Overzicht**: de gezondheid, het netwerk, de versie per node, en per node de monitor, de manager, de OSD's en de
   vrije schijven. Draait Ceph nog niet, dan staan hier de stappen om het op te bouwen. De pakketten installeer je per
@@ -491,6 +501,8 @@ zet hem aan door een aantal dagen in te vullen. Met Standaard gaat alles terug n
 De kleur van de tabbladen, de lijst met aandachtspunten en het dashboard volgen deze instellingen. De tool rekent de
 aandachtspunten ongeveer één keer per minuut opnieuw uit.
 
+![Het tabblad Events: de aandachtspunten en wat er gebeurd is](docs/screenshots/nl/events.webp) <!-- github -->
+
 ## Dashboard voor aan de muur (SXY)
 
 De knop SXY in de kop opent een donker, schermvullend dashboard. Alles erop is een widget: per node een toerenteller
@@ -498,6 +510,8 @@ voor processor en geheugen, grafieken van het laatste uur (processor, geheugen, 
 cijfers, de aandachtspunten, de drukste guests, de opslag en een klok. Onder VM's en CT's kies je daarnaast guests
 die een eigen widget krijgen: met toerentellers voor processor en geheugen, of hij aan staat, op welke node, hoe
 lang al, en bij een container hoe vol zijn schijf is.
+
+![Het SXY-dashboard voor aan de muur](docs/screenshots/nl/sxy.webp) <!-- github -->
 
 - **Indeling aanpassen**: zet het slot rechtsboven open. Sleep een widget naar een andere plek; de andere schuiven
   dan op, zoals widgets op een telefoon. Met het hoekje rechtsonder maak je een widget groter of kleiner, met het

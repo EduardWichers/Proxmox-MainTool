@@ -7,6 +7,8 @@ Diese Anleitung gibt es auch auf Niederländisch ([LEESMIJ.md](LEESMIJ.md)) und 
 
 **[Version 1.4.1 als ZIP herunterladen](../../archive/refs/tags/v1.4.1.zip)**: Der Dateiname enthält die Versionsnummer (die grüne Schaltfläche Code liefert immer …-main.zip). Diese ZIP kannst du in einem Schritt bei **Tool aktualisieren** übergeben. Entpackt liegt oben die Setup-Datei `maintool-setup.sh`, um das Tool auf einem Node zu installieren; der Rest ist der Quellcode. <!-- github -->
 
+![Der Reiter Übersicht: die Nodes mit ihrer Auslastung, und die Container und VMs mit ihren Tags und Updates](docs/screenshots/de/overview.webp) <!-- github -->
+
 ## Zuerst lesen
 
 - **Das Tool erhält Administratorrechte für deinen ganzen Cluster.** Es verwendet einen Zugriffsschlüssel
@@ -312,6 +314,8 @@ einem Speicher ist eine Schätzung aus den Platten der Gäste; bei Ceph steht de
 Kasten. Klicke auf einen Gast, um ihn in der Übersicht zu zeigen. Mit Ausblenden klappst du die Topologie ein; dieser
 Browser merkt sich das.
 
+![Die Topologie auf dem Reiter Netzwerke, mit dem Verkehr über jede Verbindung](docs/screenshots/de/topology.webp) <!-- github -->
+
 ## Tags
 
 Die Tags von Containern und VMs stehen neben ihrem Namen, in denselben Farben wie in Proxmox (eigene Farben stellst du
@@ -334,6 +338,8 @@ dann erscheint zuerst ein Fenster mit einer Warnung und der Wahl, wie du dich ab
 
 Du musst anhaken, dass du das Risiko verstehst. Bei einem Node kann Proxmox selbst kein Backup erstellen; dort bleibt
 es bei der Warnung.
+
+![Vor einem Update: das Fenster mit der Wahl, zuerst ein Backup zu erstellen](docs/screenshots/de/update.webp) <!-- github -->
 
 Mit der Schaltfläche mit der Uhr neben Nach Updates suchen (Reiter Übersicht) richtest du **automatische Updates**
 ein, mit einem oder mehreren Zeitplänen. Jeder Zeitplan hat einen eigenen Namen, wie oft (jeden Tag, jede Woche, alle
@@ -382,6 +388,8 @@ Ein Gast in HA wird von Proxmox überwacht: Hängt er sich auf, startet HA ihn n
 startet HA ihn nach ein paar Minuten auf einem anderen Node. Der Reiter HA zeigt, ob der Cluster eine Mehrheit hat,
 welcher Node HA steuert, wie es um HA pro Node steht (zum Beispiel in Betrieb oder im Wartungsmodus) und welche Gäste
 darin sind, mit ihrem Zustand, was HA mit ihnen tun soll und wie oft HA es erneut versuchen darf.
+
+![Der Reiter HA: wie es um HA pro Node steht, die Gäste in HA und die HA-Regeln](docs/screenshots/de/ha.webp) <!-- github -->
 
 - **Hinzufügen** mit der Plus-Schaltfläche auf dem Reiter oder in der Übersicht über Aktion für Auswahl, Zu HA
   hinzufügen. Du wählst einen oder mehrere Gäste und was HA mit ihnen tut. Standardmäßig bleibt alles, wie es ist: Ein
@@ -439,6 +447,8 @@ das Tool aus ist; nur das Zeitfenster braucht das Tool.
   schalte HA nach der Wartung gleich wieder ein.
 
 ## Ceph einrichten (Schraubenschlüssel auf dem Reiter Speicher)
+
+![Der Reiter Speicher: die Speicher, wie voll sie sind, und Ceph mit seinen Pools](docs/screenshots/de/storage.webp) <!-- github -->
 
 - **Übersicht**: der Zustand, das Netzwerk, die Version pro Node, und pro Node der Monitor, der Manager, die OSDs und die
   freien Platten. Läuft Ceph noch nicht, stehen hier die Schritte, um es aufzubauen. Die Pakete installierst du pro Node
@@ -528,6 +538,8 @@ Ausgangszustand.
 Die Farbe der Reiter, die Liste der Auffälligkeiten und das Dashboard folgen diesen Einstellungen. Das Tool berechnet
 die Auffälligkeiten etwa einmal pro Minute neu.
 
+![Der Reiter Ereignisse: die Auffälligkeiten und was passiert ist](docs/screenshots/de/events.webp) <!-- github -->
+
 ## Dashboard für die Wand (SXY)
 
 Die Schaltfläche SXY in der Kopfzeile öffnet ein dunkles, bildschirmfüllendes Dashboard. Alles darauf ist ein Widget:
@@ -536,6 +548,8 @@ Arbeitsspeicher, Netzwerkverkehr), der Cluster in Zahlen, die Auffälligkeiten, 
 Speicher und eine Uhr. Unter VMs und CTs wählst du außerdem Gäste, die ein eigenes Widget bekommen: mit
 Drehzahlmessern für Prozessor und Arbeitsspeicher, ob er läuft, auf welchem Node, seit wann, und bei einem Container,
 wie voll seine Platte ist.
+
+![Das SXY-Dashboard für die Wand](docs/screenshots/de/sxy.webp) <!-- github -->
 
 - **Anordnung ändern**: Öffne das Schloss oben rechts. Ziehe ein Widget an eine andere Stelle; die anderen rücken
   dann nach, wie Widgets auf einem Telefon. Mit der Ecke unten rechts machst du ein Widget größer oder kleiner, mit
