@@ -5,7 +5,7 @@ Erstellt von Eduard Wichers.
 
 Diese Anleitung gibt es auch auf Niederländisch ([LEESMIJ.md](LEESMIJ.md)) und Englisch ([README.md](README.md)). Alle drei liegen der Setup-Datei bei.
 
-**[Version 1.4.1 als ZIP herunterladen](../../archive/refs/tags/v1.4.1.zip)**: Der Dateiname enthält die Versionsnummer (die grüne Schaltfläche Code liefert immer …-main.zip). Diese ZIP kannst du in einem Schritt bei **Tool aktualisieren** übergeben. Entpackt liegt oben die Setup-Datei `maintool-setup.sh`, um das Tool auf einem Node zu installieren; der Rest ist der Quellcode. <!-- github -->
+**[Version 1.5 als ZIP herunterladen](../../archive/refs/tags/v1.5.zip)**: Der Dateiname enthält die Versionsnummer (die grüne Schaltfläche Code liefert immer …-main.zip). Diese ZIP kannst du in einem Schritt bei **Tool aktualisieren** übergeben. Entpackt liegt oben die Setup-Datei `maintool-setup.sh`, um das Tool auf einem Node zu installieren; der Rest ist der Quellcode. <!-- github -->
 
 ![Der Reiter Übersicht: die Nodes mit ihrer Auslastung, und die Container und VMs mit ihren Tags und Updates](docs/screenshots/de/overview.webp) <!-- github -->
 
@@ -99,8 +99,9 @@ Diese Anleitung gibt es auch auf Niederländisch ([LEESMIJ.md](LEESMIJ.md)) und 
   wählst, und auf Wunsch nur, wenn etwas los ist. Die Mail richtest du in der Seite ein, für Gmail, Outlook,
   Microsoft 365, iCloud, Yahoo, Ziggo, KPN oder einen eigenen Mailserver, und du kannst eine Testmail senden.
 - Eine eigene Hintergrundfarbe und die Sprache der Seite (Niederländisch, Englisch, Deutsch) über das Menü.
-- Das Tool selbst aktualisieren, indem du der Seite die Setup-Datei einer neueren Version oder gleich die ZIP von
-  GitHub übergibst.
+- Das Tool selbst aktualisieren: Es sieht selbst, wenn es eine neue Version auf GitHub gibt (die Menü-Schaltfläche wird
+  orange), und holt sie mit einer Schaltfläche, oder du übergibst die Setup-Datei einer neueren Version oder die ZIP von
+  GitHub selbst.
 - Das Passwort des Tools über das Menü ändern.
 - Anmelden mit einem Sicherheitsschlüssel (YubiKey oder Passkey): ohne Passwort oder als zusätzlicher Schritt nach dem
   Passwort.
@@ -115,7 +116,8 @@ Diese Anleitung gibt es auch auf Niederländisch ([LEESMIJ.md](LEESMIJ.md)) und 
 - Proxmox VE 9 (Version 8 kann funktionieren, ist aber nicht getestet), auf gewöhnlicher PC-Hardware (amd64).
 - Root-Zugriff auf die Shell eines Nodes.
 - Eine freie, feste IP-Adresse in deinem Netzwerk für den Container.
-- Internet für den Container während der Installation (Debian- und Python-Pakete).
+- Internet für den Container während der Installation (Debian- und Python-Pakete), und danach, wenn das Tool neue
+  Versionen auf GitHub sehen soll.
 - Etwa 5 GB freien Speicher und 512 MB Arbeitsspeicher.
 
 ## Installieren
@@ -169,8 +171,17 @@ Am Ende läuft ein Selbsttest, der meldet, was funktioniert und was nicht.
 
 ## Aktualisieren und entfernen
 
-Am einfachsten: Öffne im Tool das Menü, wähle **Tool aktualisieren** und übergib dort die Setup-Datei der neueren
-Version oder gleich die ZIP dieser Version von GitHub: Das Tool holt die Setup-Datei dann selbst heraus. Das geht ab
+Ab Version 1.5 behält das Tool GitHub selbst im Auge: kurz nach dem Start und danach alle sechs Stunden fragt es
+GitHub, welche Versionen es gibt (ein Tag wie v1.5). Gibt es eine neuere, wird die Menü-Schaltfläche orange, unter
+**Tool aktualisieren** steht, welche Version verfügbar ist, und Administratoren bekommen ein Fenster mit **Jetzt
+aktualisieren**, **Später** und **Nicht mehr erinnern**. Nicht mehr erinnern gilt für dich und für diese Version, auf
+jedem Gerät; das Menü bleibt orange, bis das Tool aktualisiert ist. In **Tool aktualisieren** holt die Schaltfläche
+unter Von GitHub diese Version und prüft sie genauso wie eine Datei, die du selbst übergibst; nach deinem Passwort wird
+sie installiert. An GitHub geht nur diese Frage, nichts über deinen Cluster. Willst du das nicht, trage `UPDATE_REPO=`
+(leer) in `/etc/maintool/maintool.env` ein und führe im Container `systemctl restart maintool` aus.
+
+Du kannst auch selbst eine Datei übergeben: Öffne im Tool das Menü, wähle **Tool aktualisieren** und übergib dort die
+Setup-Datei der neueren Version oder gleich die ZIP dieser Version von GitHub: Das Tool holt die Setup-Datei dann selbst heraus. Das geht ab
 Version 1.4.1 (sowohl das laufende Tool als auch die ZIP); läuft noch eine ältere Version, entpacke die ZIP zuerst und
 wähle `maintool-setup.sh`. Das Tool prüft die Datei, fragt nach deinem Passwort, bewahrt eine Kopie der alten Version auf und stellt sie
 von selbst wieder her, wenn die neue nicht richtig startet. Das ersetzt nur das Tool selbst. Ändert eine neue Version

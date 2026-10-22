@@ -1417,6 +1417,11 @@ MESSAGES = {
         ('Invalid tag: start with a letter, digit or _, after that also - + or a dot; at most 64 characters and 20 tags', 'Ungültiger Tag: Beginne mit einem Buchstaben, einer Ziffer oder _, danach auch - + oder ein Punkt; höchstens 64 Zeichen und 20 Tags'),
     'De tool houdt het label maintool op zijn eigen container: daaraan herkent het setup-bestand hem bij bijwerken en verwijderen':
         ('The tool keeps the tag maintool on its own container: that is how the setup file recognises it when updating and removing', 'Das Tool behält den Tag maintool auf seinem eigenen Container: Daran erkennt die Setup-Datei ihn beim Aktualisieren und Entfernen'),
+    'Zoeken naar nieuwe versies staat uit (UPDATE_REPO in maintool.env)':
+        ('Looking for new versions is switched off (UPDATE_REPO in maintool.env)',
+         'Die Suche nach neuen Versionen ist ausgeschaltet (UPDATE_REPO in maintool.env)'),
+    'Deze versie staat niet (meer) op GitHub; kijk opnieuw':
+        ('This version is not (or no longer) on GitHub; check again', 'Diese Version ist nicht (mehr) auf GitHub; sieh noch einmal nach'),
 }
 _PATTERNS = [(re.compile("^" + re.escape(nl).replace(r"\{0\}", "(.*?)").replace(r"\{1\}", "(.*?)") + "$", re.S), en, de)
              for nl, (en, de) in MESSAGES.items()]
@@ -8060,6 +8065,7 @@ def start_background():
     threading.Thread(target=report_loop, daemon=True).start()
     threading.Thread(target=autoupdate_loop, daemon=True).start()
     threading.Thread(target=balance_loop, daemon=True).start()
+    threading.Thread(target=github_loop, daemon=True).start()
 
 
 @app.get("/api/report/status")
@@ -8352,6 +8358,7 @@ class SettingsIn(BaseModel):
     language: str | None = Field(None, pattern="^(nl|en|de)$")   # taal van de pagina; null = volgt de browser
     dashboard: dict | None = None   # indeling en verversingstijden van het dashboard SXY; null = de standaard
     tables: dict | None = None      # kolommen en volgorde van de tabellen (zie clean_tables); null = de standaard
+    update_dismissed: str | None = Field(None, pattern=r"^\d{1,4}(\.\d{1,4}){1,2}$")   # Herinner mij niet: voor deze versie
 
 
 # De indeling van het dashboard: tegels op een raster van 24 kolommen (x, y, breedte w, hoogte h in hokjes), welke
@@ -8399,7 +8406,8 @@ def page_settings(user: str) -> dict:
     saved = saved_settings(state.load(), user)
     return {"background": saved.get("background"), "default": saved.get("default"), "language": saved.get("language"),
             "dashboard": saved.get("dashboard") if isinstance(saved.get("dashboard"), dict) else None,
-            "tables": saved.get("tables") if isinstance(saved.get("tables"), dict) else None}
+            "tables": saved.get("tables") if isinstance(saved.get("tables"), dict) else None,
+            "update_dismissed": saved.get("update_dismissed")}
 
 
 @app.get("/api/settings")
@@ -8567,14 +8575,18 @@ def update_guard(request: Request):
         raise HTTPException(409, "Er wordt al een update geïnstalleerd")
 
 
-@app.get("/api/selfupdate/status")
-def selfupdate_status(_: str = Depends(auth)):
+def selfupdate_view(user: str) -> dict:
     try:
         result = json.loads(UPDATE_RESULT.read_text(encoding="utf-8"))
     except (OSError, ValueError):
         result = None
     return {"version": VERSION, "available": UPDATER.is_file(), "busy": UPDATE_TRIGGER.exists(),
-            "result": result if isinstance(result, dict) else None}
+            "result": result if isinstance(result, dict) else None, "github": github_view(user)}
+
+
+@app.get("/api/selfupdate/status")
+def selfupdate_status(user: str = Depends(auth)):
+    return selfupdate_view(user)
 
 
 @app.post("/api/selfupdate/upload")
@@ -8598,6 +8610,12 @@ async def selfupdate_upload(request: Request, _: str = Depends(admin)):
         raise HTTPException(500, "Het bestand kon niet worden opgeslagen")
     finally:
         part.unlink(missing_ok=True)
+    return await judge_update()
+
+
+async def judge_update() -> dict:
+    """Het oordeel over het klaargezette bestand: eerst het setup-bestand uit een ZIP of tar.gz halen, dan de controle
+    van het bijwerkprogramma. Voor een aangeleverd bestand en voor een versie die de tool zelf van GitHub haalt."""
     member, refused = await asyncio.to_thread(from_archive, UPDATE_FILE)
     if refused:
         UPDATE_FILE.unlink(missing_ok=True)
@@ -8714,6 +8732,212 @@ def selfupdate_apply(body: UpdateIn, request: Request, user: str = Depends(admin
     except OSError:
         raise HTTPException(500, "Het bestand kon niet worden opgeslagen")
     return {"started": True, "version": verdict["version"], "previous": VERSION, "time": int(time.time())}
+
+
+# ---------------------------------------------------------------- nieuwe versies op GitHub
+# De tool kijkt kort na het starten en daarna elke zes uur op GitHub of daar een nieuwere versie staat: een tag vX.Y of
+# vX.Y.Z van de repository. Is die er, dan kleurt de pagina het menu oranje en meldt ze het aan beheerders. Met één knop
+# haalt de tool de ZIP van die versie zelf op; die gaat door precies dezelfde controle als een bestand dat je zelf
+# aanlevert, en installeren vraagt daarna nog steeds het wachtwoord. Naar GitHub gaat alleen de vraag welke versies er
+# zijn, niets over het cluster. UPDATE_REPO leeg in maintool.env zet het kijken uit.
+UPDATE_REPO = os.environ.get("UPDATE_REPO", "EduardWichers/Proxmox-MainTool").strip()
+REPO_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9-]{0,38}/[A-Za-z0-9._-]{1,100}$")
+if UPDATE_REPO and not REPO_RE.match(UPDATE_REPO):
+    UPDATE_REPO = ""   # onzin in maintool.env: dan niet kijken, in plaats van een vreemd adres op te vragen
+GITHUB_API = "https://api.github.com"
+GITHUB_SITE = "https://github.com"
+GITHUB_ZIP_HOSTS = ("github.com", "codeload.github.com")   # de ZIP van een tag komt via codeload
+GITHUB_EVERY = 6 * 3600   # zo vaak kijken
+GITHUB_RETRY = 3600       # na een mislukte poging eerder opnieuw
+GITHUB_GAP = 30           # vaker dan dit op Opnieuw kijken drukken geeft het vorige antwoord (GitHub telt de vragen)
+VERSION_TAG_RE = re.compile(r"^v?(\d{1,4}(?:\.\d{1,4}){1,2})$")
+NOTES_MAX = 4000
+github_lock = threading.Lock()
+
+
+def version_key(text):
+    """'1.4.1' of 'v1.5' -> (1, 4, 1) of (1, 5, 0); None als het geen versienummer is."""
+    m = VERSION_TAG_RE.match(str(text or "").strip())
+    if not m:
+        return None
+    parts = [int(x) for x in m.group(1).split(".")]
+    return tuple(parts + [0] * (3 - len(parts)))
+
+
+def github_get(path: str, etag: str | None = None):
+    headers = {"Accept": "application/vnd.github+json", "X-GitHub-Api-Version": "2022-11-28",
+               "User-Agent": f"proxmox-maintool/{VERSION}"}
+    if etag:
+        headers["If-None-Match"] = etag   # niets veranderd: GitHub antwoordt 304 en telt de vraag niet mee
+    return requests.get(f"{GITHUB_API}/repos/{UPDATE_REPO}{path}", headers=headers, timeout=15)
+
+
+def release_notes(message) -> str:
+    """Wat er nieuw is, uit het commitbericht van de versie: zonder de titelregel en zonder regels als
+    Co-Authored-By, en de afgebroken regels van een opsomming weer aan elkaar. Platte tekst; de pagina zet er nooit
+    opmaak van om."""
+    out = []
+    for line in re.sub(r"[^\S\n]", " ", str(message or "")).split("\n")[1:]:
+        if re.match(r"^[A-Za-z-]+: .*<[^<>]*>\s*$", line):
+            continue
+        if line.startswith("  ") and out and out[-1].strip():
+            out[-1] = out[-1].rstrip() + " " + line.strip()
+        else:
+            out.append(line.rstrip())
+    return "\n".join(out).strip()[:NOTES_MAX]
+
+
+def github_saved() -> dict:
+    """Wat de tool het laatst over GitHub weet (in state.json); leeg als dat over een andere repository ging."""
+    g = state.load().get("github")
+    return g if isinstance(g, dict) and g.get("repo") == UPDATE_REPO else {}
+
+
+class GithubError(Exception):
+    """Geen bruikbaar antwoord van GitHub; de tekst is een code die de pagina vertaalt."""
+
+
+def github_check(manual: bool = False) -> dict:
+    """Vraagt GitHub welke versies er zijn en bewaart de nieuwste in state.json. Lukt dat niet, dan blijft de laatst
+    bekende versie staan en komt alleen de fout erbij."""
+    with github_lock:
+        saved, now = github_saved(), int(time.time())
+        if manual and now - (saved.get("tried") or 0) < GITHUB_GAP:
+            return saved
+        info = {**saved, "repo": UPDATE_REPO, "tried": now}
+        try:
+            try:
+                r = github_get("/tags?per_page=100", saved.get("etag"))
+            except requests.RequestException:
+                raise GithubError("unreachable")
+            if r.status_code == 404:
+                raise GithubError("not_found")      # verkeerde naam, of de repository is (nog) niet openbaar
+            if r.status_code in (403, 429):
+                raise GithubError("rate_limited")
+            if r.status_code == 200:
+                try:
+                    tags = [t for t in r.json() if isinstance(t, dict) and version_key(t.get("name"))]
+                except (ValueError, TypeError):
+                    raise GithubError("bad_answer")
+                best = max(tags, key=lambda t: version_key(t["name"]), default=None)
+                if best is None:
+                    info.update(tag=None, version=None, sha=None, notes=None)
+                else:
+                    sha = str((best.get("commit") or {}).get("sha") or "")
+                    if not re.fullmatch(r"[0-9a-f]{40}", sha):
+                        raise GithubError("bad_answer")
+                    if best["name"] != saved.get("tag") or sha != saved.get("sha"):
+                        notes = None
+                        try:
+                            c = github_get(f"/commits/{sha}")
+                            if c.status_code == 200:
+                                notes = release_notes(((c.json() or {}).get("commit") or {}).get("message")) or None
+                        except (requests.RequestException, ValueError, TypeError, AttributeError):
+                            pass   # zonder toelichting kan het ook
+                        info.update(tag=best["name"], version=VERSION_TAG_RE.match(best["name"]).group(1), sha=sha, notes=notes)
+                info["etag"] = r.headers.get("ETag")   # pas nu: een antwoord dat niet te gebruiken was, wordt opnieuw gelezen
+            elif r.status_code != 304:
+                raise GithubError("bad_answer")
+            info.update(checked=now, error=None)
+        except GithubError as err:
+            info["error"] = str(err)
+        try:
+            state.change(lambda d: d.update(github=info))
+        except OSError:
+            pass
+        return info
+
+
+def github_view(user: str) -> dict:
+    """Voor de pagina: de nieuwste versie op GitHub, of die nieuwer is dan wat hier draait, en voor welke versie deze
+    gebruiker heeft gekozen om er niet meer aan herinnerd te worden."""
+    g, mine = github_saved(), version_key(VERSION)
+    latest = g.get("version")
+    newer = bool(UPDATE_REPO and mine and version_key(latest) and version_key(latest) > mine)
+    return {"enabled": bool(UPDATE_REPO), "repo": UPDATE_REPO or None, "latest": latest, "tag": g.get("tag"),
+            "newer": newer, "notes": g.get("notes") if newer else None, "checked": g.get("checked"),
+            "tried": g.get("tried"), "error": g.get("error"),
+            "dismissed": saved_settings(state.load(), user).get("update_dismissed")}
+
+
+def github_loop():
+    """Kort na het starten kijken, daarna elke zes uur; na een mislukte poging elk uur."""
+    time.sleep(60)
+    while UPDATE_REPO:
+        try:
+            g = github_saved()
+            if time.time() - (g.get("tried") or 0) >= (GITHUB_RETRY if g.get("error") else GITHUB_EVERY):
+                github_check()
+        except Exception:  # noqa: BLE001 - het kijken mag de tool nooit hinderen
+            pass
+        time.sleep(600)
+
+
+def github_download(tag: str) -> str | None:
+    """Haalt de ZIP van een versie op GitHub naar het klaarzetbestand, hooguit UPDATE_MAX groot. None als dat lukte,
+    anders een code voor de pagina."""
+    part = UPDATE_DIR / "upload.part"
+    try:
+        UPDATE_DIR.mkdir(mode=0o700, exist_ok=True)
+        with requests.get(f"{GITHUB_SITE}/{UPDATE_REPO}/archive/refs/tags/{tag}.zip", stream=True, timeout=(10, 60),
+                          headers={"User-Agent": f"proxmox-maintool/{VERSION}"}) as r:
+            if r.status_code == 404:
+                return "github_not_found"
+            if r.status_code != 200 or urllib.parse.urlsplit(r.url).hostname not in GITHUB_ZIP_HOSTS:
+                return "github_unreachable"
+            if int(r.headers.get("content-length") or 0) > UPDATE_MAX:
+                return "too_big"
+            size = 0
+            with open(part, "wb") as f:
+                for chunk in r.iter_content(65536):
+                    size += len(chunk)
+                    if size > UPDATE_MAX:
+                        return "too_big"
+                    f.write(chunk)
+        os.replace(part, UPDATE_FILE)
+        return None
+    except requests.RequestException:
+        return "github_unreachable"
+    except OSError:
+        raise HTTPException(500, "Het bestand kon niet worden opgeslagen")
+    finally:
+        part.unlink(missing_ok=True)
+
+
+@app.post("/api/selfupdate/check")
+def selfupdate_check(request: Request, user: str = Depends(admin)):
+    """Nu meteen opnieuw kijken op GitHub (de knop Opnieuw kijken bij Tool bijwerken)."""
+    same_origin(request)
+    if not UPDATE_REPO:
+        raise HTTPException(409, "Zoeken naar nieuwe versies staat uit (UPDATE_REPO in maintool.env)")
+    github_check(manual=True)
+    return selfupdate_view(user)
+
+
+class GithubIn(BaseModel):
+    version: str = Field(pattern=r"^\d{1,4}(\.\d{1,4}){1,2}$")   # de versie die de pagina heeft getoond
+
+
+@app.post("/api/selfupdate/github")
+async def selfupdate_github(body: GithubIn, request: Request, _: str = Depends(admin)):
+    """Haalt de nieuwste versie zelf van GitHub en geeft het oordeel van de controle, net als bij een aangeleverd
+    bestand. Installeren gaat daarna langs dezelfde weg: /api/selfupdate/apply, met het wachtwoord."""
+    update_guard(request)
+    if not UPDATE_REPO:
+        raise HTTPException(409, "Zoeken naar nieuwe versies staat uit (UPDATE_REPO in maintool.env)")
+    g = github_saved()
+    if not g.get("tag") or version_key(g.get("version")) != version_key(body.version):
+        raise HTTPException(409, "Deze versie staat niet (meer) op GitHub; kijk opnieuw")
+    refused = await asyncio.to_thread(github_download, g["tag"])
+    if refused:
+        return {"ok": False, "code": refused}
+    verdict = await judge_update()
+    if verdict.get("ok") and version_key(verdict.get("version")) != version_key(body.version):
+        # het setup-bestand in de ZIP is niet opnieuw gebouwd voor deze versie: niet stilletjes iets anders installeren
+        UPDATE_FILE.unlink(missing_ok=True)
+        return {"ok": False, "code": "github_mismatch", "version": verdict.get("version"), "wanted": body.version}
+    verdict["from_github"] = g["tag"]
+    return verdict
 
 
 # ---------------------------------------------------------------- aanmaken: container, VM, opslag

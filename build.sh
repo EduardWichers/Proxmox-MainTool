@@ -60,7 +60,8 @@ ALLOWED_IPS = {"192.168.1.1", "192.168.1.10", "192.168.1.11", "192.168.1.12", "1
                "192.168.20.5", "10.10.10.0"}   # voorbeeldadressen in formulierteksten en meldingen (10.10.10.0/24: het Ceph-netwerk)
 ALLOWED_MAIL = {"jij@voorbeeld.nl", "you@example.com", "du@beispiel.de"}   # voorbeelden in formulierteksten
 CHECKS = [
-    ("naam buiten de credits", re.compile(r"(?<!Eduard )wichers", re.I), None),
+    # Wel toegestaan: het adres van de repository op GitHub (naam/Proxmox-MainTool), waar de tool naar nieuwe versies kijkt.
+    ("naam buiten de credits", re.compile(r"(?<!Eduard )wichers(?!/Proxmox-MainTool\b)", re.I), None),
     ("privé-IP-adres", re.compile(r"(?<![\d.])(?:10\.\d{1,3}|192\.168|172\.(?:1[6-9]|2\d|3[01]))\.\d{1,3}\.\d{1,3}(?![\d.])"), ALLOWED_IPS),
     ("mailadres", re.compile(r"[\w.+-]+@[\w-]+(?:\.[\w-]+)+"), ALLOWED_MAIL),
     ("privésleutel", re.compile(r"BEGIN [A-Z ]*PRIVATE KEY"), None),

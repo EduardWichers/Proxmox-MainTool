@@ -5,7 +5,7 @@ Gemaakt door Eduard Wichers.
 
 Deze uitleg is er ook in het Engels ([README.md](README.md)) en het Duits ([LIESMICH.md](LIESMICH.md)). Alle drie komen mee met het setup-bestand.
 
-**[Download versie 1.4.1 als ZIP](../../archive/refs/tags/v1.4.1.zip)**: de bestandsnaam bevat het versienummer (de groene knop Code geeft altijd …-main.zip). Deze ZIP kun je in één keer aanleveren bij **Tool bijwerken**. Uitgepakt staat bovenin het setup-bestand `maintool-setup.sh`, om de tool op een node te installeren; de rest is de broncode. <!-- github -->
+**[Download versie 1.5 als ZIP](../../archive/refs/tags/v1.5.zip)**: de bestandsnaam bevat het versienummer (de groene knop Code geeft altijd …-main.zip). Deze ZIP kun je in één keer aanleveren bij **Tool bijwerken**. Uitgepakt staat bovenin het setup-bestand `maintool-setup.sh`, om de tool op een node te installeren; de rest is de broncode. <!-- github -->
 
 ![Het tabblad Overzicht: de nodes met hun belasting, en de containers en VM's met hun labels en updates](docs/screenshots/nl/overview.webp) <!-- github -->
 
@@ -92,8 +92,8 @@ Deze uitleg is er ook in het Engels ([README.md](README.md)) en het Duits ([LIES
   eventueel alleen als er iets aan de hand is. De mail stel je in de pagina in, voor Gmail, Outlook, Microsoft 365,
   iCloud, Yahoo, Ziggo, KPN of een eigen mailserver, en je kunt een testmail sturen.
 - Een eigen achtergrondkleur, en de taal van de pagina (Nederlands, Engels, Duits) via het menu.
-- De tool zelf bijwerken door het setup-bestand van een nieuwere versie, of meteen de ZIP van GitHub, in de pagina aan
-  te leveren.
+- De tool zelf bijwerken: hij ziet zelf wanneer er een nieuwe versie op GitHub staat (de menuknop wordt oranje) en haalt
+  die met één knop op, of je levert het setup-bestand van een nieuwere versie, of de ZIP van GitHub, zelf aan.
 - Het wachtwoord van de tool wijzigen via het menu.
 - Inloggen met een beveiligingssleutel (YubiKey of passkey): zonder wachtwoord, of als extra stap na het wachtwoord.
 - Meer gebruikers, elk met een eigen wachtwoord: als beheerder, met alleen lezen, of met de rol van een of meer
@@ -107,7 +107,8 @@ Deze uitleg is er ook in het Engels ([README.md](README.md)) en het Duits ([LIES
 - Proxmox VE 9 (versie 8 kan werken, maar is niet getest), op gewone pc-hardware (amd64).
 - Root-toegang tot de shell van één node.
 - Een vrij, vast IP-adres in je netwerk voor de container.
-- Internet voor de container tijdens het installeren (Debian- en Python-pakketten).
+- Internet voor de container tijdens het installeren (Debian- en Python-pakketten), en daarna als de tool nieuwe
+  versies op GitHub moet zien.
 - Ongeveer 5 GB vrije opslag en 512 MB geheugen.
 
 ## Installeren
@@ -152,8 +153,17 @@ Aan het eind draait een zelftest die meldt wat werkt en wat niet.
 
 ## Bijwerken en verwijderen
 
-Het eenvoudigst: open in de tool het menu, kies **Tool bijwerken** en lever daar het setup-bestand van de nieuwere
-versie aan, of meteen de ZIP van die versie van GitHub: de tool haalt het setup-bestand er dan zelf uit. Dat laatste
+Vanaf versie 1.5 houdt de tool GitHub zelf in de gaten: kort na het starten en daarna elke zes uur vraagt hij GitHub
+welke versies er zijn (een tag zoals v1.5). Is er een nieuwere, dan wordt de menuknop oranje, staat onder **Tool
+bijwerken** welke versie er is, en krijgen beheerders een venster met **Nu bijwerken**, **Later** en **Herinner mij
+niet**. Herinner mij niet geldt voor jou en voor die versie, op elk apparaat; het menu blijft oranje tot de tool is
+bijgewerkt. In **Tool bijwerken** haalt de knop onder Van GitHub die versie op en controleert hem net als een bestand
+dat je zelf aanlevert; na je wachtwoord wordt hij geïnstalleerd. Naar GitHub gaat alleen die vraag, niets over je
+cluster. Wil je dit niet, zet dan `UPDATE_REPO=` (leeg) in `/etc/maintool/maintool.env` en draai in de container
+`systemctl restart maintool`.
+
+Je kunt ook zelf een bestand aanleveren: open in de tool het menu, kies **Tool bijwerken** en lever daar het
+setup-bestand van de nieuwere versie aan, of meteen de ZIP van die versie van GitHub: de tool haalt het setup-bestand er dan zelf uit. Dat laatste
 kan vanaf versie 1.4.1 (zowel de tool die draait als de ZIP); draait er nog een oudere versie, pak de ZIP dan eerst uit
 en kies `maintool-setup.sh`. De tool controleert het bestand, vraagt je wachtwoord, bewaart een kopie van de oude versie en zet die
 vanzelf terug als de nieuwe niet goed start. Dit vervangt alleen de tool zelf. Verandert een nieuwe versie meer

@@ -5,7 +5,7 @@ Made by Eduard Wichers.
 
 This explanation is also available in Dutch ([LEESMIJ.md](LEESMIJ.md)) and German ([LIESMICH.md](LIESMICH.md)). All three come with the setup file.
 
-**[Download version 1.4.1 as ZIP](../../archive/refs/tags/v1.4.1.zip)**: the file name contains the version number (the green Code button always gives …-main.zip). You can hand this ZIP to **Update the tool** in one go. Unpacked, the setup file `maintool-setup.sh` is at the top, to install the tool on a node; the rest is the source code. <!-- github -->
+**[Download version 1.5 as ZIP](../../archive/refs/tags/v1.5.zip)**: the file name contains the version number (the green Code button always gives …-main.zip). You can hand this ZIP to **Update the tool** in one go. Unpacked, the setup file `maintool-setup.sh` is at the top, to install the tool on a node; the rest is the source code. <!-- github -->
 
 ![The Overview tab: the nodes with their load, and the containers and VMs with their tags and updates](docs/screenshots/en/overview.webp) <!-- github -->
 
@@ -91,8 +91,8 @@ This explanation is also available in Dutch ([LEESMIJ.md](LEESMIJ.md)) and Germa
   and if you like only when something is wrong. You set up the mail in the page, for Gmail, Outlook, Microsoft 365,
   iCloud, Yahoo, Ziggo, KPN or your own mail server, and you can send a test mail.
 - Your own background colour, and the language of the page (Dutch, English, German) through the menu.
-- Updating the tool itself by handing the setup file of a newer version, or straight away the ZIP from GitHub, to the
-  page.
+- Updating the tool itself: it sees by itself when there is a new version on GitHub (the menu button turns orange) and
+  fetches it with one button, or you hand over the setup file of a newer version, or the ZIP from GitHub, yourself.
 - Changing the password of the tool through the menu.
 - Logging in with a security key (YubiKey or passkey): without a password, or as an extra step after the password.
 - More users, each with their own password: as administrator, read only, or with the role of one or more tabs (menu,
@@ -106,7 +106,8 @@ This explanation is also available in Dutch ([LEESMIJ.md](LEESMIJ.md)) and Germa
 - Proxmox VE 9 (version 8 may work, but has not been tested), on ordinary PC hardware (amd64).
 - Root access to the shell of one node.
 - A free, fixed IP address in your network for the container.
-- Internet for the container during the installation (Debian and Python packages).
+- Internet for the container during the installation (Debian and Python packages), and afterwards if the tool is to
+  see new versions on GitHub.
 - About 5 GB of free storage and 512 MB of memory.
 
 ## Installing
@@ -159,8 +160,17 @@ At the end a self-test runs that reports what works and what does not.
 
 ## Updating and removing
 
-The easiest way: open the menu in the tool, choose **Update the tool** and hand over the setup file of the newer
-version there, or straight away the ZIP of that version from GitHub: the tool then takes the setup file out of it
+From version 1.5 on, the tool keeps an eye on GitHub itself: shortly after starting and then every six hours, it asks
+GitHub which versions there are (a tag such as v1.5). If there is a newer one, the menu button turns orange, under
+**Update the tool** it says which version is available, and administrators get a window with **Update now**, **Later**
+and **Don't remind me**. Don't remind me holds for you and for that version, on every device; the menu stays orange
+until the tool has been updated. In **Update the tool**, the button under From GitHub fetches that version and checks
+it just like a file you hand over yourself; it is installed after your password. Only that question goes to GitHub,
+nothing about your cluster. To switch this off, put `UPDATE_REPO=` (empty) in `/etc/maintool/maintool.env` and run
+`systemctl restart maintool` in the container.
+
+You can also hand over a file yourself: open the menu in the tool, choose **Update the tool** and hand over the setup
+file of the newer version there, or straight away the ZIP of that version from GitHub: the tool then takes the setup file out of it
 itself. The latter works from version 1.4.1 on (both the running tool and the ZIP); if an older version is running,
 unpack the ZIP first and choose `maintool-setup.sh`. The tool checks the file, asks for your password, keeps a copy of the old version and puts it back by
 itself if the new one does not start properly. This only replaces the tool itself. If a new version changes more

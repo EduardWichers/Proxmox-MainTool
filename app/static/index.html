@@ -14,7 +14,7 @@
     --glass:rgba(255,255,255,.5); --glass-strong:rgba(255,255,255,.78); --glass-soft:rgba(255,255,255,.42);
     --edge:rgba(255,255,255,.8); --shine:rgba(255,255,255,.9); --sheen:rgba(255,255,255,.45);
     --shadow:rgba(40,60,110,.16); --inset:rgba(255,255,255,.55);
-    --ok:#28a94f; --warn:#e08a00; --bad:#e5342a; --accent:#007aff;
+    --ok:#28a94f; --warn:#e08a00; --bad:#e5342a; --accent:#007aff; --update:#ef8100;
     --wash:
       radial-gradient(60vw 60vh at 6% 0%, #b7d5ff 0%, transparent 62%),
       radial-gradient(52vw 56vh at 100% 8%, #ffd0e6 0%, transparent 62%),
@@ -27,7 +27,7 @@
     --glass:rgba(255,255,255,.075); --glass-strong:rgba(38,42,58,.72); --glass-soft:rgba(255,255,255,.09);
     --edge:rgba(255,255,255,.18); --shine:rgba(255,255,255,.26); --sheen:rgba(255,255,255,.1);
     --shadow:rgba(0,0,0,.42); --inset:rgba(0,0,0,.3);
-    --ok:#32d74b; --warn:#ffd60a; --bad:#ff5a50; --accent:#0a84ff;
+    --ok:#32d74b; --warn:#ffd60a; --bad:#ff5a50; --accent:#0a84ff; --update:#ff9f0a;
     --wash:
       radial-gradient(60vw 60vh at 6% 0%, #17387f 0%, transparent 62%),
       radial-gradient(52vw 56vh at 100% 8%, #5a1f6c 0%, transparent 62%),
@@ -176,6 +176,25 @@
   .verdict { border:1px solid var(--line); border-radius:16px; padding:10px 14px; margin:12px 0; background:var(--glass-soft);
              overflow-wrap:anywhere; }
   .verdict p { margin:5px 0; }
+  /* Nieuwe versie op GitHub: de menuknop en de regel onder Tool bijwerken worden oranje (ook in het donkere thema
+     oranje, niet het geel van een waarschuwing). */
+  header #menu.update { color:#fff; background:var(--update); border-color:transparent;
+                        box-shadow:0 0 0 3px color-mix(in srgb, var(--update) 30%, transparent), 0 4px 14px color-mix(in srgb, var(--update) 40%, transparent); }
+  header #menu.update:hover:not(:disabled) { background:color-mix(in srgb, var(--update) 88%, #000); }
+  #menupanel #su-new { display:flex; align-items:center; gap:7px; margin:-2px 0 2px; padding:4px 12px 8px 12px;
+                       color:var(--update); font-weight:600; font-size:12px; white-space:normal; }
+  #menupanel #su-new::before { content:""; width:7px; height:7px; border-radius:50%; background:currentColor; flex:none; }
+  .sugh { border:1px solid var(--line); border-radius:16px; padding:10px 14px; margin:12px 0; background:var(--glass-soft); }
+  .sugh.new { border-color:color-mix(in srgb, var(--update) 60%, transparent);
+              background:color-mix(in srgb, var(--update) 9%, var(--glass-soft)); }
+  .sugh p { margin:5px 0; }
+  .sugh .toolbar { margin:8px 0 2px; }
+  .relnotes { max-height:min(38vh, 260px); overflow:auto; margin:8px 0; padding:8px 12px; border-radius:12px;
+              background:var(--glass-soft); border:1px solid var(--line); font-size:13px; overflow-wrap:anywhere; }
+  .relnotes ul { margin:4px 0; padding-left:20px; }
+  .relnotes li { margin:3px 0; }
+  .relnotes p { margin:4px 0; }
+  .sect.su { margin:14px 0 2px; font-weight:600; }
   .tag { font-size:11px; font-weight:600; padding:2px 8px; border-radius:99px; background:var(--glass-soft); border:1px solid var(--line); }
 
   dialog { color:var(--text); width:min(640px,95vw); padding:20px; border-radius:26px;
@@ -344,7 +363,7 @@
   body:not([data-can~="backups"]) :is(#jobnew, [data-ja], [data-fa], #bktabs [data-tab=now], [data-add=job]) { display:none !important; }
   body:not([data-can~="backups"]) .jobon { pointer-events:none; }
   body:not([data-can~="events"]) :is(#rp-send, #rp-test, #ml-open, #al-open, #rp-plan) { display:none !important; }
-  body:not([data-can~="admin"]) :is(#selfupdate, #users) { display:none !important; }
+  body:not([data-can~="admin"]) :is(#selfupdate, #su-new, #users) { display:none !important; }
   body:not([data-can~="overview"]):not([data-can~="storage"]):not([data-can~="backups"]) #add { display:none !important; }
 
   /* SXY: het dashboard voor aan de muur. Altijd donker, schermvullend, met eigen kleuren; zie het script bij "SXY".
@@ -899,6 +918,7 @@ SYSTEM_DARK.addEventListener("change", () => { if (!BG) paint(null); });
 <div id="menupanel" class="pop" popover="manual">
   <button id="bgopen" title="Achtergrondkleur van de tool">Achtergrond<span class="swatch" id="bgswatch"></span></button>
   <button id="selfupdate">Tool bijwerken</button>
+  <button id="su-new" hidden></button>
   <label class="menurow">Taal<select id="lang"><option value="nl">Nederlands</option><option value="en">English</option><option value="de">Deutsch</option></select></label>
   <button id="pwopen">Wachtwoord wijzigen</button>
   <button id="keysopen" title="YubiKey of passkey: inloggen zonder wachtwoord, of als extra stap na je wachtwoord">Beveiligingssleutels</button>
@@ -1473,7 +1493,15 @@ SYSTEM_DARK.addEventListener("change", () => { if (!BG) paint(null); });
 <dialog id="sudlg">
   <h3 style="margin-top:0">Tool bijwerken</h3>
   <p class="small" id="su-now"></p>
+  <div id="su-gh" class="sugh" hidden>
+    <p><b>Van GitHub</b> <span class="small" id="su-ghwhen"></span></p>
+    <p id="su-ghstate"></p>
+    <div id="su-ghnotes" class="relnotes" hidden></div>
+    <p class="toolbar"><button id="su-ghcheck" title="Nu meteen op GitHub kijken of er een nieuwere versie is">Opnieuw kijken</button>
+      <button id="su-ghget" class="primary" hidden></button></p>
+  </div>
   <div id="su-pick">
+    <p class="sect su">Zelf een bestand kiezen</p>
     <p>Kies het setup-bestand van een nieuwere versie (maintool-setup.sh). De tool controleert het bestand eerst; er wordt pas iets geïnstalleerd nadat je het hebt bevestigd met je wachtwoord.</p>
     <p class="small">De ZIP van een versie op GitHub (vanaf 1.4.1) kun je ook in één keer kiezen: de tool haalt het setup-bestand er zelf uit.</p>
     <p class="small warn">Gebruik alleen een bestand dat je van de maker hebt gekregen: wat je hier installeert krijgt volledige toegang tot je cluster.</p>
@@ -1487,6 +1515,17 @@ SYSTEM_DARK.addEventListener("change", () => { if (!BG) paint(null); });
   </div>
   <p id="su-state" style="min-height:20px"></p>
   <p style="text-align:right;margin-bottom:0"><button id="su-close">Sluiten</button> <button id="su-go" class="primary" hidden>Installeren</button></p>
+</dialog>
+
+<dialog id="sundlg">
+  <h3 style="margin-top:0">Nieuwe versie beschikbaar</h3>
+  <p id="sun-text"></p>
+  <div id="sun-notes" hidden><p class="small" style="margin-bottom:0"><b>Wat is er nieuw</b></p><div class="relnotes" id="sun-list"></div></div>
+  <p class="small">De tool haalt de nieuwe versie zelf van GitHub en controleert hem. Er wordt pas iets geïnstalleerd nadat je het hebt bevestigd met je wachtwoord.</p>
+  <p style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-bottom:0">
+    <button id="sun-never" title="Geen melding meer voor deze versie. Het menu blijft oranje tot je hebt bijgewerkt.">Herinner mij niet</button>
+    <span class="grow"></span><button id="sun-later" title="Deze melding komt terug als je de tool later opnieuw opent">Later</button>
+    <button id="sun-go" class="primary" autofocus>Nu bijwerken</button></p>
 </dialog>
 
 <dialog id="cndlg" class="wide">
@@ -3850,7 +3889,36 @@ const I18N = {
   "In dit ingepakte bestand staat geen setup-bestand van de Proxmox Maintool (maintool-setup.sh).": "This packed file does not contain a setup file of the Proxmox Maintool (maintool-setup.sh).",
   "De ZIP van een versie op GitHub (vanaf 1.4.1) kun je ook in één keer kiezen: de tool haalt het setup-bestand er zelf uit.": "You can also choose the ZIP of a version on GitHub (from 1.4.1 on) in one go: the tool takes the setup file out of it itself.",
   "Verbergen": "Hide",
-  "Tonen": "Show"
+  "Tonen": "Show",
+  "Van GitHub": "From GitHub",
+  "Nu meteen op GitHub kijken of er een nieuwere versie is": "Check GitHub for a newer version right now",
+  "Opnieuw kijken": "Check again",
+  "Zelf een bestand kiezen": "Choose a file yourself",
+  "Nieuwe versie beschikbaar": "New version available",
+  "Wat is er nieuw": "What's new",
+  "De tool haalt de nieuwe versie zelf van GitHub en controleert hem. Er wordt pas iets geïnstalleerd nadat je het hebt bevestigd met je wachtwoord.": "The tool fetches the new version from GitHub itself and checks it. Nothing is installed until you have confirmed it with your password.",
+  "Geen melding meer voor deze versie. Het menu blijft oranje tot je hebt bijgewerkt.": "No more message for this version. The menu stays orange until you have updated.",
+  "Herinner mij niet": "Don't remind me",
+  "Deze melding komt terug als je de tool later opnieuw opent": "This message comes back when you open the tool again later",
+  "Nu bijwerken": "Update now",
+  "GitHub is nu niet bereikbaar vanaf de tool. Probeer het later opnieuw, of kies zelf een bestand.": "GitHub cannot be reached from the tool right now. Try again later, or choose a file yourself.",
+  "Deze versie is niet (meer) te vinden op GitHub. Kijk opnieuw.": "This version cannot be found on GitHub (any more). Check again.",
+  "GitHub is niet bereikbaar vanaf de tool. Heeft de container internet?": "GitHub cannot be reached from the tool. Does the container have internet access?",
+  "De repository {0} is niet gevonden op GitHub, of hij is (nog) niet openbaar.": "The repository {0} was not found on GitHub, or it is not public (yet).",
+  "GitHub laat de tool even niet kijken: te veel vragen vanaf dit adres. Later lukt het weer.": "GitHub does not let the tool check for a while: too many requests from this address. It will work again later.",
+  "GitHub gaf een onverwacht antwoord.": "GitHub gave an unexpected answer.",
+  "In de ZIP van versie {0} op GitHub zit het setup-bestand van versie {1}. Er is niets klaargezet; laat de maker dit weten.": "The ZIP of version {0} on GitHub contains the setup file of version {1}. Nothing has been prepared; let the maker know.",
+  "Versie {0} staat op GitHub. Deze tool draait versie {1}.": "Version {0} is on GitHub. This tool runs version {1}.",
+  "Je hebt de nieuwste versie ({0}).": "You have the latest version ({0}).",
+  "Op GitHub staat nog geen versie.": "There is no version on GitHub yet.",
+  "De tool heeft nog niet op GitHub gekeken.": "The tool has not checked GitHub yet.",
+  "gekeken: {0}": "checked: {0}",
+  "Versie {0} ophalen en controleren": "Fetch and check version {0}",
+  "Versie {0} wordt van GitHub gehaald en gecontroleerd…": "Version {0} is being fetched from GitHub and checked…",
+  "Menu: versie {0} is beschikbaar": "Menu: version {0} is available",
+  "Versie {0} beschikbaar": "Version {0} available",
+  "Versie {0} van de Proxmox Maintool staat op GitHub. Deze tool draait versie {1}.": "Version {0} of the Proxmox Maintool is on GitHub. This tool runs version {1}.",
+  "Geen melding meer voor versie {0}. Bijwerken kan altijd via het menu, bij Tool bijwerken.": "No more message for version {0}. You can always update through the menu, under Update the tool."
  },
  "de": {
   "Vernieuwen: haalt het overzicht direct opnieuw op bij Proxmox": "Aktualisieren: holt die Übersicht sofort neu von Proxmox",
@@ -5730,7 +5798,36 @@ const I18N = {
   "In dit ingepakte bestand staat geen setup-bestand van de Proxmox Maintool (maintool-setup.sh).": "Diese gepackte Datei enthält keine Setup-Datei des Proxmox Maintool (maintool-setup.sh).",
   "De ZIP van een versie op GitHub (vanaf 1.4.1) kun je ook in één keer kiezen: de tool haalt het setup-bestand er zelf uit.": "Du kannst auch die ZIP einer Version auf GitHub (ab 1.4.1) in einem Schritt wählen: Das Tool holt die Setup-Datei selbst heraus.",
   "Verbergen": "Ausblenden",
-  "Tonen": "Einblenden"
+  "Tonen": "Einblenden",
+  "Van GitHub": "Von GitHub",
+  "Nu meteen op GitHub kijken of er een nieuwere versie is": "Jetzt sofort auf GitHub nachsehen, ob es eine neuere Version gibt",
+  "Opnieuw kijken": "Erneut nachsehen",
+  "Zelf een bestand kiezen": "Selbst eine Datei wählen",
+  "Nieuwe versie beschikbaar": "Neue Version verfügbar",
+  "Wat is er nieuw": "Was ist neu",
+  "De tool haalt de nieuwe versie zelf van GitHub en controleert hem. Er wordt pas iets geïnstalleerd nadat je het hebt bevestigd met je wachtwoord.": "Das Tool holt die neue Version selbst von GitHub und prüft sie. Installiert wird erst, nachdem du es mit deinem Passwort bestätigt hast.",
+  "Geen melding meer voor deze versie. Het menu blijft oranje tot je hebt bijgewerkt.": "Keine Meldung mehr für diese Version. Das Menü bleibt orange, bis du aktualisiert hast.",
+  "Herinner mij niet": "Nicht mehr erinnern",
+  "Deze melding komt terug als je de tool later opnieuw opent": "Diese Meldung kommt wieder, wenn du das Tool später erneut öffnest",
+  "Nu bijwerken": "Jetzt aktualisieren",
+  "GitHub is nu niet bereikbaar vanaf de tool. Probeer het later opnieuw, of kies zelf een bestand.": "GitHub ist vom Tool aus gerade nicht erreichbar. Versuche es später noch einmal oder wähle selbst eine Datei.",
+  "Deze versie is niet (meer) te vinden op GitHub. Kijk opnieuw.": "Diese Version ist auf GitHub nicht (mehr) zu finden. Sieh noch einmal nach.",
+  "GitHub is niet bereikbaar vanaf de tool. Heeft de container internet?": "GitHub ist vom Tool aus nicht erreichbar. Hat der Container Internet?",
+  "De repository {0} is niet gevonden op GitHub, of hij is (nog) niet openbaar.": "Das Repository {0} wurde auf GitHub nicht gefunden, oder es ist (noch) nicht öffentlich.",
+  "GitHub laat de tool even niet kijken: te veel vragen vanaf dit adres. Later lukt het weer.": "GitHub lässt das Tool gerade nicht nachsehen: zu viele Anfragen von dieser Adresse. Später klappt es wieder.",
+  "GitHub gaf een onverwacht antwoord.": "GitHub hat unerwartet geantwortet.",
+  "In de ZIP van versie {0} op GitHub zit het setup-bestand van versie {1}. Er is niets klaargezet; laat de maker dit weten.": "Die ZIP der Version {0} auf GitHub enthält die Setup-Datei der Version {1}. Es wurde nichts bereitgestellt; sag dem Ersteller Bescheid.",
+  "Versie {0} staat op GitHub. Deze tool draait versie {1}.": "Version {0} ist auf GitHub. Dieses Tool läuft mit Version {1}.",
+  "Je hebt de nieuwste versie ({0}).": "Du hast die neueste Version ({0}).",
+  "Op GitHub staat nog geen versie.": "Auf GitHub gibt es noch keine Version.",
+  "De tool heeft nog niet op GitHub gekeken.": "Das Tool hat noch nicht auf GitHub nachgesehen.",
+  "gekeken: {0}": "nachgesehen: {0}",
+  "Versie {0} ophalen en controleren": "Version {0} holen und prüfen",
+  "Versie {0} wordt van GitHub gehaald en gecontroleerd…": "Version {0} wird von GitHub geholt und geprüft…",
+  "Menu: versie {0} is beschikbaar": "Menü: Version {0} ist verfügbar",
+  "Versie {0} beschikbaar": "Version {0} verfügbar",
+  "Versie {0} van de Proxmox Maintool staat op GitHub. Deze tool draait versie {1}.": "Version {0} des Proxmox Maintool ist auf GitHub. Dieses Tool läuft mit Version {1}.",
+  "Geen melding meer voor versie {0}. Bijwerken kan altijd via het menu, bij Tool bijwerken.": "Keine Meldung mehr für Version {0}. Aktualisieren kannst du immer über das Menü, unter Tool aktualisieren."
  }
 };
 const LOCALE = { nl: "nl-NL", en: "en-GB", de: "de-DE" }[LANG];
@@ -10496,7 +10593,8 @@ $("#whorole").textContent = " · " + (ADMIN ? t("beheerder") : CAN.size ? t("beh
 (function sortMenu() {   // na het vertalen, zodat de volgorde in elke taal klopt
   const menu = $("#menupanel"), last = menu.querySelector(".credits");
   const label = el => (el.firstChild ? el.firstChild.textContent : el.textContent).trim();
-  [...menu.children].filter(el => el !== last).sort((a, b) => label(a).localeCompare(label(b), LOCALE)).forEach(el => menu.insertBefore(el, last));
+  [...menu.children].filter(el => el !== last && el.id !== "su-new").sort((a, b) => label(a).localeCompare(label(b), LOCALE)).forEach(el => menu.insertBefore(el, last));
+  $("#selfupdate").after($("#su-new"));   // de regel over een nieuwe versie hoort direct onder Tool bijwerken
 })();
 
 setInterval(() => { if (VIEW_LOAD[VIEW] && !document.hidden && !document.querySelector("dialog[open]")) VIEW_LOAD[VIEW](); }, 30000);
@@ -11098,7 +11196,9 @@ api("/api/settings").then(s => {
 // ------------------------------------------------------------------ de tool bijwerken met één bestand
 // Het setup-bestand van een nieuwere versie gaat naar de tool, die het laat controleren (zie updater/maintool-updater).
 // Installeren begint pas na bevestiging met het wachtwoord; daarna herstart de tool en wacht deze pagina op de uitkomst.
-let suVerdict = null, suTimer = null;
+// Staat er op GitHub een nieuwere versie, dan haalt de tool die op verzoek zelf op (Van GitHub); die gaat door dezelfde
+// controle en daarna dezelfde stappen als een bestand dat je zelf kiest.
+let suVerdict = null, suTimer = null, suStatus = null;
 const SU_REFUSED = {
   not_a_package: "Dit is geen setup-bestand van de Proxmox Maintool. Kies het bestand maintool-setup.sh: bovenin de uitgepakte ZIP van GitHub (vanaf versie 1.4.1), of het bestand dat je van de maker kreeg.",
   archive_old: "In deze ZIP staat nog geen kant-en-klaar setup-bestand: dat zit erin vanaf versie 1.4.1. Download de ZIP van een nieuwere versie, of gebruik het setup-bestand dat je van de maker kreeg.",
@@ -11108,9 +11208,19 @@ const SU_REFUSED = {
   too_big: "Het bestand is te groot.",
   bad_content: "De inhoud van het bestand klopt niet met wat een setup-bestand hoort te bevatten.",
   needs_setup: "Deze versie verandert meer dan de pagina zelf mag installeren. Draai het setup-bestand op een node: bash maintool-setup.sh --update",
+  github_unreachable: "GitHub is nu niet bereikbaar vanaf de tool. Probeer het later opnieuw, of kies zelf een bestand.",
+  github_not_found: "Deze versie is niet (meer) te vinden op GitHub. Kijk opnieuw.",
+};
+// Wat er misging bij het kijken op GitHub (zie github_check in main.py)
+const SU_GH_ERR = {
+  unreachable: "GitHub is niet bereikbaar vanaf de tool. Heeft de container internet?",
+  not_found: "De repository {0} is niet gevonden op GitHub, of hij is (nog) niet openbaar.",
+  rate_limited: "GitHub laat de tool even niet kijken: te veel vragen vanaf dit adres. Later lukt het weer.",
+  bad_answer: "GitHub gaf een onverwacht antwoord.",
 };
 function suRefusal(v) {
   if (v.code === "older") return t("Dit bestand bevat een oudere versie dan er nu draait ({0}). Teruggaan naar een oudere versie kan hier niet.", v.current || "?");
+  if (v.code === "github_mismatch") return t("In de ZIP van versie {0} op GitHub zit het setup-bestand van versie {1}. Er is niets klaargezet; laat de maker dit weten.", v.wanted || "?", v.version || "?");
   return SU_REFUSED[v.code] ? t(SU_REFUSED[v.code]) : t("De controle is mislukt ({0}). Probeer het opnieuw.", v.code || "?");
 }
 function suOutcome(r) {   // de uitkomst van een installatie, zoals het bijwerkprogramma die heeft achtergelaten
@@ -11121,10 +11231,54 @@ function suOutcome(r) {   // de uitkomst van een installatie, zoals het bijwerkp
   return t("Er is niets geïnstalleerd: {0}", suRefusal(r));
 }
 function suStep(step) {   // "kiezen", "bevestigen" of "bezig"
-  $("#su-pick").hidden = step !== "kiezen";
+  $("#su-pick").hidden = step !== "kiezen" || !!(suStatus && !suStatus.available);
+  $("#su-gh").hidden = step !== "kiezen" || !(suStatus && suStatus.github && suStatus.github.enabled);
   $("#su-verdict").hidden = step === "kiezen";
   $("#su-confirm").hidden = $("#su-go").hidden = step !== "bevestigen";
   $("#su-close").disabled = step === "bezig";
+}
+function relNotes(text) {   // platte tekst van GitHub: regels met een streepje worden een opsomming, de rest alinea's
+  const out = [];
+  let list = [];
+  const flush = () => { if (list.length) out.push(`<ul>${list.map(x => `<li>${esc(x)}</li>`).join("")}</ul>`); list = []; };
+  for (const line of String(text || "").split("\n")) {
+    const item = line.match(/^\s*[-*•]\s+(.*)$/);
+    if (item) { list.push(item[1]); continue; }
+    flush();
+    if (line.trim()) out.push(`<p>${esc(line.trim())}</p>`);
+  }
+  flush();
+  return out.join("");
+}
+function suGithub(s) {   // het blok Van GitHub: wat de tool er het laatst zag, en de knop om die versie op te halen
+  const g = s && s.github;
+  if (!g || !g.enabled) return;
+  const main = g.newer ? t("Versie {0} staat op GitHub. Deze tool draait versie {1}.", g.latest, s.version)
+    : g.latest ? t("Je hebt de nieuwste versie ({0}).", s.version)
+    : g.checked ? t("Op GitHub staat nog geen versie.")
+    : g.error ? "" : t("De tool heeft nog niet op GitHub gekeken.");
+  const err = g.error ? t(SU_GH_ERR[g.error] || SU_GH_ERR.bad_answer, g.repo || "") : "";
+  $("#su-gh").classList.toggle("new", !!g.newer);
+  $("#su-ghwhen").textContent = g.checked ? "· " + t("gekeken: {0}", when(g.checked)) : "";
+  $("#su-ghstate").innerHTML = (main ? `<span>${esc(main)}</span>` : "") + (main && err ? "<br>" : "")
+    + (err ? `<span class="warn small">${esc(err)}</span>` : "");
+  $("#su-ghnotes").hidden = !(g.newer && g.notes);
+  $("#su-ghnotes").innerHTML = g.newer && g.notes ? relNotes(g.notes) : "";
+  $("#su-ghget").hidden = !(g.newer && s.available);
+  $("#su-ghget").textContent = g.newer ? t("Versie {0} ophalen en controleren", g.latest) : "";
+}
+function suShowVerdict(v, label) {   // het oordeel over een bestand, gekozen of van GitHub gehaald
+  suVerdict = v;
+  if (!v.ok) { $("#su-state").className = "warn"; $("#su-state").textContent = suRefusal(v); return; }
+  const notes = { same_version: "Dat is dezelfde versie als nu draait; installeren zet de bestanden opnieuw neer.",
+    agent_changed: "Deze versie bevat een nieuwer hulpscript voor de nodes. Draai na het bijwerken ook op een node: bash maintool-setup.sh --update" };
+  $("#su-verdict").innerHTML = `<p><b>${esc(t("Dit bestand bevat versie {0}.", v.version))}</b></p>
+    <p class="small">${esc(label)}${v.from_archive ? " → " + esc(v.from_archive) : ""} · ${v.size >= 1048576 ? size(v.size) : Math.round(v.size / 1024) + " KB"}</p>
+    <p class="small">${esc(t("Vingerafdruk (SHA-256): {0}", v.sha256))}</p>` +
+    (v.warnings || []).filter(w => notes[w]).map(w => `<p class="small warn">${esc(t(notes[w]))}</p>`).join("");
+  $("#su-state").textContent = "";
+  suStep("bevestigen");
+  $("#su-pass").focus();
 }
 async function openSelfUpdate() {
   suVerdict = null;
@@ -11135,16 +11289,19 @@ async function openSelfUpdate() {
   $("#sudlg").showModal();
   try {
     const s = await api("/api/selfupdate/status");
+    suStatus = s;
     $("#su-now").textContent = t("Deze tool draait versie {0}.", s.version) + (!s.result ? "" : " " + (s.result.ok
       ? t("Laatste keer bijgewerkt: {0} (naar versie {1})", when(s.result.time), s.result.version)
       : t("Laatste poging: {0}, niet gelukt", when(s.result.time))));
-    if (!s.available) {
-      $("#su-pick").hidden = true;
+    suGithub(s);
+    suMark(s);
+    suStep("kiezen");
+    if (!s.available)
       $("#su-state").textContent = t("Bijwerken via de pagina is op deze installatie nog niet ingeschakeld. Draai één keer op een node: bash maintool-setup.sh --update");
-    }
   } catch (e) { $("#su-state").textContent = e.message; }
 }
 $("#selfupdate").onclick = openSelfUpdate;
+$("#su-new").onclick = openSelfUpdate;
 $("#su-close").onclick = () => $("#sudlg").close();
 $("#sudlg").addEventListener("cancel", e => { if ($("#su-close").disabled) e.preventDefault(); });   // niet wegklikken tijdens het installeren
 $("#sudlg").addEventListener("close", () => {
@@ -11157,23 +11314,34 @@ $("#su-check").onclick = async () => {
   if (!file) { toast(t("Kies eerst een bestand"), "err"); return; }
   $("#su-state").className = "";
   $("#su-state").textContent = t("Bestand wordt gecontroleerd…");
-  $("#su-check").disabled = true;
+  $("#su-check").disabled = $("#su-ghget").disabled = true;
   let v;
   try {
     v = await api("/api/selfupdate/upload", { method: "POST", body: file, headers: { "Content-Type": "application/octet-stream" } });
   } catch (e) { $("#su-state").className = "warn"; $("#su-state").textContent = e.message; return; }
-  finally { $("#su-check").disabled = false; }
-  suVerdict = v;
-  if (!v.ok) { $("#su-state").className = "warn"; $("#su-state").textContent = suRefusal(v); return; }
-  const notes = { same_version: "Dat is dezelfde versie als nu draait; installeren zet de bestanden opnieuw neer.",
-    agent_changed: "Deze versie bevat een nieuwer hulpscript voor de nodes. Draai na het bijwerken ook op een node: bash maintool-setup.sh --update" };
-  $("#su-verdict").innerHTML = `<p><b>${esc(t("Dit bestand bevat versie {0}.", v.version))}</b></p>
-    <p class="small">${esc(file.name)}${v.from_archive ? " → " + esc(v.from_archive) : ""} · ${v.size >= 1048576 ? size(v.size) : Math.round(v.size / 1024) + " KB"}</p>
-    <p class="small">${esc(t("Vingerafdruk (SHA-256): {0}", v.sha256))}</p>` +
-    (v.warnings || []).filter(w => notes[w]).map(w => `<p class="small warn">${esc(t(notes[w]))}</p>`).join("");
-  $("#su-state").textContent = "";
-  suStep("bevestigen");
-  $("#su-pass").focus();
+  finally { $("#su-check").disabled = $("#su-ghget").disabled = false; }
+  suShowVerdict(v, file.name);
+};
+$("#su-ghcheck").onclick = async () => {
+  $("#su-ghcheck").disabled = true;
+  try {
+    suStatus = await api("/api/selfupdate/check", { method: "POST" });
+    suGithub(suStatus);
+    suMark(suStatus);
+  } catch (e) { toast(e.message, "err"); }
+  finally { $("#su-ghcheck").disabled = false; }
+};
+$("#su-ghget").onclick = async () => {
+  const g = suStatus && suStatus.github;
+  if (!g || !g.newer) return;
+  $("#su-state").className = "";
+  $("#su-state").textContent = t("Versie {0} wordt van GitHub gehaald en gecontroleerd…", g.latest);
+  $("#su-ghget").disabled = $("#su-check").disabled = $("#su-ghcheck").disabled = true;
+  let v;
+  try { v = await api("/api/selfupdate/github", { method: "POST", body: JSON.stringify({ version: g.latest }) }); }
+  catch (e) { $("#su-state").className = "warn"; $("#su-state").textContent = e.message; return; }
+  finally { $("#su-ghget").disabled = $("#su-check").disabled = $("#su-ghcheck").disabled = false; }
+  suShowVerdict(v, `GitHub · ${v.from_github || g.tag}.zip`);
 };
 $("#su-go").onclick = async () => {
   const password = $("#su-pass").value;
@@ -11204,6 +11372,52 @@ $("#su-go").onclick = async () => {
     if (done && done.ok) setTimeout(() => location.reload(), 2500);
   }, 2000);
 };
+
+// ------------------------------------------------------------------ nieuwe versie op GitHub: menu oranje en een melding
+// De tool kijkt zelf op GitHub (github_check in main.py); deze pagina vraagt alleen wat hij weet, en alleen voor
+// beheerders: zij kunnen bijwerken. Zolang er een nieuwere versie is, is de menuknop oranje en staat onder Tool bijwerken
+// welke versie er is. De melding komt één keer per browsersessie; Herinner mij niet geldt per gebruiker en per versie
+// (bewaard bij de tool, dus op elk apparaat). Het menu blijft oranje tot er is bijgewerkt.
+const SUN_LATER = "maintool_update_later", MENU_TITLE = $("#menu").title;
+let SUN_VERSION = null;
+function suMark(s) {   // menuknop en de regel onder Tool bijwerken; geeft terug of er een nieuwere versie is
+  const g = s && s.github, newer = !!(g && g.enabled && g.newer);
+  $("#menu").classList.toggle("update", newer);
+  $("#menu").title = newer ? t("Menu: versie {0} is beschikbaar", g.latest) : MENU_TITLE;
+  $("#su-new").hidden = !newer;
+  $("#su-new").textContent = newer ? t("Versie {0} beschikbaar", g.latest) : "";
+  return newer;
+}
+async function suNews(popup) {
+  if (!ADMIN) return;
+  let s;
+  try { s = await api("/api/selfupdate/status"); } catch (e) { return; }
+  if (!suMark(s) || !popup) return;
+  const g = s.github;
+  let later = null;
+  try { later = sessionStorage.getItem(SUN_LATER); } catch (e) {}
+  if (g.dismissed === g.latest || later === g.latest || SXY || UPDATING || document.querySelector("dialog[open]")) return;
+  SUN_VERSION = g.latest;
+  $("#sun-text").textContent = t("Versie {0} van de Proxmox Maintool staat op GitHub. Deze tool draait versie {1}.", g.latest, s.version);
+  $("#sun-notes").hidden = !g.notes;
+  $("#sun-list").innerHTML = g.notes ? relNotes(g.notes) : "";
+  $("#sundlg").showModal();
+}
+$("#sundlg").addEventListener("close", () => { try { sessionStorage.setItem(SUN_LATER, SUN_VERSION || ""); } catch (e) {} });
+$("#sun-later").onclick = () => $("#sundlg").close();
+$("#sun-go").onclick = () => { $("#sundlg").close(); openSelfUpdate(); };
+$("#sun-never").onclick = async () => {
+  const version = SUN_VERSION;
+  $("#sundlg").close();
+  try {
+    await api("/api/settings", { method: "PUT", body: JSON.stringify({ update_dismissed: version }) });
+    toast(t("Geen melding meer voor versie {0}. Bijwerken kan altijd via het menu, bij Tool bijwerken.", version), "ok");
+  } catch (e) { toast(e.message, "err"); }
+};
+if (ADMIN) {
+  setTimeout(() => suNews(true), 2500);              // even na het laden, zodat de melding niet over de rest heen valt
+  setInterval(() => suNews(true), 3600 * 1000);      // een pagina die lang open staat ziet een nieuwe versie ook
+}
 
 // ------------------------------------------------------------------ SXY: dashboard voor aan de muur
 // Een schermvullend overzicht met toerentellers, grafieken en cijfers, bedoeld om te laten staan. Het gebruikt de
