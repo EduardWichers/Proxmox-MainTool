@@ -10,13 +10,17 @@ WorkingDirectory=/opt/maintool/app
 EnvironmentFile=/etc/maintool/maintool.env
 ExecStart=/opt/maintool/venv/bin/uvicorn main:app --host 0.0.0.0 --port 8443 \
   --ssl-keyfile /etc/maintool/tls.key --ssl-certfile /etc/maintool/tls.crt \
-  --proxy-headers --no-server-header --timeout-keep-alive 75
+  --proxy-headers --no-server-header --timeout-keep-alive 75 --limit-concurrency 200
 Restart=on-failure
+UMask=0077
 NoNewPrivileges=true
 ProtectSystem=strict
 ProtectHome=true
 PrivateTmp=true
 StateDirectory=maintool
+StateDirectoryMode=0700
+# Verdere afscherming staat in maintool.service.d/hardening.conf: install.sh zet daar alleen in wat deze container
+# toelaat (elke regel wordt eerst geprobeerd).
 
 [Install]
 WantedBy=multi-user.target

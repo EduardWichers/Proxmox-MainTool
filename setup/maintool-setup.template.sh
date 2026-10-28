@@ -224,6 +224,12 @@ msg step_install   "De tool in de container zetten (dit duurt een paar minuten)"
 msg install_failed "Het installeren in de container is mislukt (heeft de container internet?). Zie %s." \
                    "Installing in the container failed (does the container have internet?). See %s." \
                    "Die Installation im Container ist fehlgeschlagen (hat der Container Internet?). Siehe %s."
+msg install_back   "De nieuwe versie startte niet goed; de vorige versie is teruggezet en draait weer. Zie %s." \
+                   "The new version did not start properly; the previous version has been put back and is running again. See %s." \
+                   "Die neue Version ist nicht richtig gestartet; die vorherige Version wurde zurückgesetzt und läuft wieder. Siehe %s."
+msg install_broken "De nieuwe versie startte niet goed, en de teruggezette vorige versie ook niet. Kijk in de container: journalctl -u maintool -n 50 (en %s)." \
+                   "The new version did not start properly, and neither did the previous version that was put back. Look in the container: journalctl -u maintool -n 50 (and %s)." \
+                   "Die neue Version ist nicht richtig gestartet, und die zurückgesetzte vorherige Version auch nicht. Sieh im Container nach: journalctl -u maintool -n 50 (und %s)."
 msg installed      "geïnstalleerd" "installed" "installiert"
 msg step_access    "Toegang tot Proxmox regelen" "Arranging access to Proxmox" "Zugriff auf Proxmox einrichten"
 msg user_created   "gebruiker %s aangemaakt" "user %s created" "Benutzer %s angelegt"
@@ -281,6 +287,12 @@ msg selftest_bad   "LET OP: de zelftest meldde een fout (zie hierboven)." "NOTE:
                    "ACHTUNG: Der Selbsttest hat einen Fehler gemeldet (siehe oben)."
 msg log_updated    "bijwerken klaar, zelftest: %s" "update done, self-test: %s" "Aktualisierung fertig, Selbsttest: %s"
 msg unattended     "Gestart zonder vragen (--yes)." "Started without questions (--yes)." "Ohne Fragen gestartet (--yes)."
+msg handover       "Het bijwerken loopt vanaf hier op de achtergrond (%s), zodat het doorgaat als deze verbinding wegvalt, bijvoorbeeld een console in de tool zelf, die meeherstart. De uitvoer volgt hieronder; het hele verslag staat in %s." \
+                   "From here the update runs in the background (%s), so it carries on if this connection drops, for example a console inside the tool itself, which restarts too. The output follows below; the full report is in %s." \
+                   "Ab hier läuft die Aktualisierung im Hintergrund (%s), damit sie weiterläuft, wenn diese Verbindung abbricht, zum Beispiel eine Konsole im Tool selbst, die mit neu startet. Die Ausgabe folgt unten; das vollständige Protokoll steht in %s."
+msg handover_fail  "Het bijwerken kon niet op de achtergrond worden gestart (systemd-run). Zie %s." \
+                   "The update could not be started in the background (systemd-run). See %s." \
+                   "Die Aktualisierung konnte nicht im Hintergrund gestartet werden (systemd-run). Siehe %s."
 msg give_id        "Geef het ID van de container mee: bash %s --uninstall ID" "Give the ID of the container: bash %s --uninstall ID" \
                    "Gib die ID des Containers mit an: bash %s --uninstall ID"
 msg no_label       "Container %s heeft het label '%s' niet en is dus niet door dit bestand aangemaakt. Ik verwijder hem niet." \
@@ -351,6 +363,30 @@ print(json.dumps(r))' >"$file" 2>/dev/null \
         && pct exec "$REPORT_CT" -- mv -f /var/lib/maintool-update/result.json.tmp /var/lib/maintool-update/result.json >/dev/null 2>&1 \
         || true
     rm -f "$file"
+}
+handover() {   # handover OPTIE...: dit bestand draait verder als achtergronddienst (systemd-run); hier volgt alleen de uitvoer
+    # Het bijwerken herstart de tool. Wie dit typt in de console van een node binnen de tool zelf, verliest die
+    # verbinding dan, en daarmee de shell met alles wat erin draait. Als dienst loopt het gewoon door; de knop in de tool
+    # (Bijwerken via de node) start het setup-bestand ook zo.
+    local unit self since follow start rc=1
+    start=$(date +%s)
+    unit="maintool-update-$start"
+    self=$(readlink -f "$SELF")
+    since=$(date -d "@$start" '+%Y-%m-%d %H:%M:%S')
+    say ""
+    say "$(tf handover "$unit" "$LOG")"
+    systemd-run --quiet --collect --unit="$unit" /bin/bash "$self" "$@" >>"$LOG" 2>&1 || die "$(tf handover_fail "$LOG")"
+    journalctl --quiet --follow --output=cat --unit="$unit" --since="$since" 2>/dev/null &
+    follow=$!
+    while systemctl is-active --quiet "$unit" 2>/dev/null; do sleep 1; done
+    sleep 1
+    kill "$follow" 2>/dev/null || true
+    wait "$follow" 2>/dev/null || true
+    # De afloop staat in de container (zie report_result); zonder bericht geldt het als mislukt.
+    pct exec "$CTID" -- cat /var/lib/maintool-update/result.json 2>/dev/null | python3 -c 'import json, sys, time
+r = json.load(sys.stdin)
+sys.exit(0 if r.get("ok") is True and r.get("version") == sys.argv[1] and r.get("time", 0) >= int(sys.argv[2]) else 1)' "$VERSION" "$start" && rc=0
+    exit "$rc"
 }
 finish() {   # bij elk einde: een afgebroken --update meldt dat nog in de container, daarna opruimen
     if [[ $MODE == update && -n $REPORT_CT && -z $REPORTED ]]; then report_result fout "${DIED:-$STEP}"; fi
@@ -912,8 +948,16 @@ install_in_container() {   # zet de bestanden van de tool in de container en dra
     tar czf "$TMP/pkg.tar.gz" -C "$TMP/pkg" .
     pct push "$CTID" "$TMP/pkg.tar.gz" /root/maintool-pkg.tar.gz
     pct exec "$CTID" -- sh -c 'rm -rf /root/maintool-pkg && mkdir /root/maintool-pkg && tar xzf /root/maintool-pkg.tar.gz -C /root/maintool-pkg && rm /root/maintool-pkg.tar.gz'
-    pct exec "$CTID" -- sh -c 'cd /root/maintool-pkg && MAINTOOL_SETUP=1 bash install.sh' >>"$LOG" 2>&1 \
-        || die "$(tf install_failed "$LOG")"
+    # install.sh zet bij bijwerken zelf de vorige versie terug als de nieuwe niet start: exitcode 3 (de vorige draait
+    # weer) of 4 (ook die niet)
+    local rc=0
+    pct exec "$CTID" -- sh -c 'cd /root/maintool-pkg && MAINTOOL_SETUP=1 bash install.sh' >>"$LOG" 2>&1 || rc=$?
+    case $rc in
+        0) ;;
+        3) die "$(tf install_back "$LOG")" ;;
+        4) die "$(tf install_broken "$LOG")" ;;
+        *) die "$(tf install_failed "$LOG")" ;;
+    esac
     pct exec "$CTID" -- sh -c 'install -m 644 /root/maintool-pkg/selftest.py /root/maintool-pkg/LICENSE /root/maintool-pkg/README.md /root/maintool-pkg/THIRD-PARTY.md /opt/maintool/ && rm -rf /root/maintool-pkg'
     note "$(T installed)"
 }
@@ -1134,6 +1178,10 @@ print(" ".join(str(g["vmid"]) for g in json.load(sys.stdin) if g.get("type") == 
     else
         read_line answer "$(tf go_prompt "$(T yes_word)")"
         [[ ${answer,,} == "$(T yes_word)" ]] || die "$(T stopped_by_you)"
+    fi
+    # Getypt in een terminal (en dus niet al als dienst gestart): de rest op de achtergrond (zie handover).
+    if [[ -z ${INVOCATION_ID:-} ]] && { [[ -n ${MT_HANDOVER:-} ]] || [[ -t 0 && -t 1 ]]; } && command -v systemd-run >/dev/null 2>&1; then
+        handover --lang "$UI" --update "$CTID" --yes
     fi
     REPORT_CT=$CTID OLD_VERSION=$old   # vanaf hier wordt de afloop in de container gemeld
     install_in_container

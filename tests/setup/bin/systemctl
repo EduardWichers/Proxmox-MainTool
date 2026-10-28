@@ -1,0 +1,4 @@
+#!/usr/bin/env bash
+# Stand-in for systemctl on the node: the service started by the stand-in systemd-run is already done.
+echo "systemctl $*" >>"$CALLS"
+exit 3

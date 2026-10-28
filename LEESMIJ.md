@@ -5,7 +5,7 @@ Gemaakt door Eduard Wichers.
 
 Deze uitleg is er ook in het Engels ([README.md](README.md)) en het Duits ([LIESMICH.md](LIESMICH.md)). Alle drie komen mee met het setup-bestand.
 
-**[Download versie 1.5.2 als ZIP](../../archive/refs/tags/v1.5.2.zip)**: de bestandsnaam bevat het versienummer (de groene knop Code geeft altijd …-main.zip). Deze ZIP kun je in één keer aanleveren bij **Tool bijwerken**. Uitgepakt staat bovenin het setup-bestand `maintool-setup.sh`, om de tool op een node te installeren; de rest is de broncode. <!-- github -->
+**[Download versie 1.5.3 als ZIP](../../archive/refs/tags/v1.5.3.zip)**: de bestandsnaam bevat het versienummer (de groene knop Code geeft altijd …-main.zip). Deze ZIP kun je in één keer aanleveren bij **Tool bijwerken**. Uitgepakt staat bovenin het setup-bestand `maintool-setup.sh`, om de tool op een node te installeren; de rest is de broncode. <!-- github -->
 
 ![Het tabblad Overzicht: de nodes met hun belasting, en de containers en VM's met hun labels en updates](docs/screenshots/nl/overview.webp) <!-- github -->
 
@@ -151,6 +151,10 @@ Aan het eind draait een zelftest die meldt wat werkt en wat niet.
 - Eén regel in `/etc/pve/priv/authorized_keys`: de SSH-sleutel van de container mag alleen dat hulpscript
   starten, en alleen vanaf het adres van de container. Van het bestand wordt eerst een kopie gemaakt in `/root`.
 - Een logboek van de installatie in `/var/log/maintool-setup.log` (zonder wachtwoorden of sleutels).
+- In de container: de tool in `/opt/maintool`, van root (de dienst kan zijn eigen programma niet wijzigen), met zijn
+  Python-pakketten in een eigen map: vaste versies, elk gecontroleerd met zijn controlesom (`requirements.txt`). De
+  dienst `maintool` draait strak afgeschermd: de installatie probeert eerst elke afscherming en zet alleen aan wat de
+  container toelaat (`/etc/systemd/system/maintool.service.d/hardening.conf`).
 
 ## Bijwerken en verwijderen
 
@@ -174,6 +178,11 @@ op de node:
     bash maintool-setup.sh --update ID
 
 Het vraagt eerst de taal en daarna of je door wilt gaan: typ `ja` (met `--yes` aan het eind vraagt het dat niet).
+Daarna loopt het verder op de achtergrond (als systemd-dienst) en laat het de uitvoer zien, zodat het bijwerken
+afmaakt ook als de verbinding wegvalt, bijvoorbeeld in een console binnen de tool zelf, die meeherstart.
+
+Bij bijwerken zet het setup-bestand de nieuwe versie eerst helemaal klaar naast de oude (de Python-pakketten
+ook) en pas dan wisselt en herstart het. Antwoordt de nieuwe versie niet, dan komt de oude vanzelf terug.
 
 Vanaf versie 1.5.2 kan de tool dit zelf starten: **Tool bijwerken** toont dan **Bijwerken via node X**, voor de node
 waar de container van de tool staat. Log in op de console van die node als root@pam (de knop opent dat venster) en
@@ -181,7 +190,8 @@ bevestig met je wachtwoord van de tool. De tool typt dan één opdracht in de sh
 setup-bestand uit zijn eigen container (`pct pull`), controleert de vingerafdruk en start
 `maintool-setup.sh --update ID --yes` op de achtergrond. De tool herstart tussendoor; het venster laat zien wanneer
 het klaar is, en het verslag blijft op de node in `/var/log/maintool-setup.log`. Zonder inlog als root@pam kan de tool
-niets op een node starten.
+niets op een node starten. Een tool ouder dan 1.5.2 heeft deze knop nog niet: werk hem dan eerst via de pagina bij
+naar 1.5.2 (kies bij Tool bijwerken de ZIP van v1.5.2), of draai het setup-bestand zelf op de node, zoals hierboven.
 
 Alles weer weghalen (de container, de toegangssleutel, de regel in `authorized_keys` en, als geen andere Maintool
 ze gebruikt, de gebruiker en het hulpscript):

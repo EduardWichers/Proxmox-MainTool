@@ -1,0 +1,8 @@
+#!/usr/bin/env bash
+# Stand-in for systemd-run: logs the call and runs the command right away, as the service would (INVOCATION_ID set),
+# with its output in a stand-in journal that the stand-in journalctl shows.
+echo "systemd-run $*" >>"$CALLS"
+[[ -z ${HANDOVER_FAIL:-} ]] || exit 1
+while (($#)); do case $1 in --*) shift ;; *) break ;; esac; done
+INVOCATION_ID=test "$@" >>"$CALLS.journal" 2>&1 </dev/null
+exit 0

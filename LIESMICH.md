@@ -5,7 +5,7 @@ Erstellt von Eduard Wichers.
 
 Diese Anleitung gibt es auch auf Niederländisch ([LEESMIJ.md](LEESMIJ.md)) und Englisch ([README.md](README.md)). Alle drei liegen der Setup-Datei bei.
 
-**[Version 1.5.2 als ZIP herunterladen](../../archive/refs/tags/v1.5.2.zip)**: Der Dateiname enthält die Versionsnummer (die grüne Schaltfläche Code liefert immer …-main.zip). Diese ZIP kannst du in einem Schritt bei **Tool aktualisieren** übergeben. Entpackt liegt oben die Setup-Datei `maintool-setup.sh`, um das Tool auf einem Node zu installieren; der Rest ist der Quellcode. <!-- github -->
+**[Version 1.5.3 als ZIP herunterladen](../../archive/refs/tags/v1.5.3.zip)**: Der Dateiname enthält die Versionsnummer (die grüne Schaltfläche Code liefert immer …-main.zip). Diese ZIP kannst du in einem Schritt bei **Tool aktualisieren** übergeben. Entpackt liegt oben die Setup-Datei `maintool-setup.sh`, um das Tool auf einem Node zu installieren; der Rest ist der Quellcode. <!-- github -->
 
 ![Der Reiter Übersicht: die Nodes mit ihrer Auslastung, und die Container und VMs mit ihren Tags und Updates](docs/screenshots/de/overview.webp) <!-- github -->
 
@@ -168,6 +168,10 @@ Am Ende läuft ein Selbsttest, der meldet, was funktioniert und was nicht.
 - Eine Zeile in `/etc/pve/priv/authorized_keys`: Der SSH-Schlüssel des Containers darf nur dieses Hilfsskript starten,
   und nur von der Adresse des Containers aus. Von der Datei wird vorher eine Kopie in `/root` angelegt.
 - Ein Protokoll der Installation in `/var/log/maintool-setup.log` (ohne Passwörter oder Schlüssel).
+- Im Container: das Tool in `/opt/maintool`, im Besitz von root (der Dienst kann sein eigenes Programm nicht ändern),
+  mit seinen Python-Paketen in einem eigenen Ordner: feste Versionen, jede mit ihrer Prüfsumme kontrolliert
+  (`requirements.txt`). Der Dienst `maintool` läuft streng abgeschirmt: Die Installation probiert zuerst jede
+  Abschirmung aus und schaltet nur ein, was der Container erlaubt (`/etc/systemd/system/maintool.service.d/hardening.conf`).
 
 ## Aktualisieren und entfernen
 
@@ -191,6 +195,11 @@ Setup-Datei auf dem Node:
     bash maintool-setup.sh --update ID
 
 Sie fragt nach der Sprache und dann, ob du fortfahren willst: `ja` eintippen (mit `--yes` am Ende fragt sie das nicht).
+Danach läuft sie im Hintergrund weiter (als systemd-Dienst) und zeigt ihre Ausgabe, damit die Aktualisierung auch
+fertig wird, wenn die Verbindung abbricht, zum Beispiel in einer Konsole im Tool selbst, die mit neu startet.
+
+Beim Aktualisieren stellt die Setup-Datei die neue Version zuerst vollständig neben die alte (die Python-Pakete
+auch) und wechselt und startet erst dann neu. Antwortet die neue Version nicht, kommt die alte von selbst zurück.
 
 Ab Version 1.5.2 kann das Tool das selbst starten: **Tool aktualisieren** zeigt dann **Über Node X aktualisieren**,
 für den Node, auf dem der Container des Tools liegt. Melde dich als root@pam an der Konsole dieses Nodes an (die
@@ -198,7 +207,9 @@ Schaltfläche öffnet dieses Fenster) und bestätige mit deinem Passwort des Too
 die Shell dieses Nodes: Es holt die Setup-Datei aus seinem eigenen Container (`pct pull`), prüft den Fingerabdruck und
 startet `maintool-setup.sh --update ID --yes` im Hintergrund. Das Tool startet zwischendurch neu; das Fenster zeigt,
 wann es fertig ist, und das Protokoll bleibt auf dem Node in `/var/log/maintool-setup.log`. Ohne Anmeldung als
-root@pam kann das Tool nichts auf einem Node starten.
+root@pam kann das Tool nichts auf einem Node starten. Ein Tool älter als 1.5.2 hat diese Schaltfläche noch nicht:
+Aktualisiere es dann zuerst über die Seite auf 1.5.2 (wähle unter Tool aktualisieren die ZIP von v1.5.2), oder führe
+die Setup-Datei selbst auf dem Node aus, wie oben.
 
 Alles wieder entfernen (den Container, den Zugriffsschlüssel, die Zeile in `authorized_keys` und, wenn kein anderes
 Maintool sie benutzt, den Benutzer und das Hilfsskript):

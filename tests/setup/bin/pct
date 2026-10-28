@@ -18,8 +18,9 @@ case $cmd in
             "systemctl restart maintool")               : ;;
             "mkdir -p /etc/maintool/ssh")               : ;;
             runuser*selftest.py*)                       echo "Zelftest (nagebootst)"; echo "Uitslag: ${SELFTEST_FAIL:+1}${SELFTEST_FAIL:-0} fout(en)."; [[ -z ${SELFTEST_FAIL:-} ]] ;;
-            sh\ -c*install.sh*)                         [[ -z ${INSTALL_FAIL:-} ]] ;;
+            sh\ -c*install.sh*)                         [[ -z ${INSTALL_FAIL:-} ]] || exit "${INSTALL_RC:-1}" ;;
             "mkdir -p /var/lib/maintool-update")        mkdir -p "$CTROOT/var/lib/maintool-update" ;;
+            "cat /var/lib/maintool-update/result.json") cat "$CTROOT/var/lib/maintool-update/result.json" ;;
             "mv -f /var/lib/maintool-update/result.json.tmp /var/lib/maintool-update/result.json")
                                                         mv -f "$CTROOT/var/lib/maintool-update/result.json.tmp" "$CTROOT/var/lib/maintool-update/result.json" ;;
             sh\ -c*)                                    : ;;

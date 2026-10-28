@@ -1,0 +1,3 @@
+#!/usr/bin/env bash
+echo "journalctl $*" >>"$CALLS"
+cat "$CALLS.journal" 2>/dev/null

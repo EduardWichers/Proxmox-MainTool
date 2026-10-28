@@ -5,7 +5,7 @@ Made by Eduard Wichers.
 
 This explanation is also available in Dutch ([LEESMIJ.md](LEESMIJ.md)) and German ([LIESMICH.md](LIESMICH.md)). All three come with the setup file.
 
-**[Download version 1.5.2 as ZIP](../../archive/refs/tags/v1.5.2.zip)**: the file name contains the version number (the green Code button always gives …-main.zip). You can hand this ZIP to **Update the tool** in one go. Unpacked, the setup file `maintool-setup.sh` is at the top, to install the tool on a node; the rest is the source code. <!-- github -->
+**[Download version 1.5.3 as ZIP](../../archive/refs/tags/v1.5.3.zip)**: the file name contains the version number (the green Code button always gives …-main.zip). You can hand this ZIP to **Update the tool** in one go. Unpacked, the setup file `maintool-setup.sh` is at the top, to install the tool on a node; the rest is the source code. <!-- github -->
 
 ![The Overview tab: the nodes with their load, and the containers and VMs with their tags and updates](docs/screenshots/en/overview.webp) <!-- github -->
 
@@ -158,6 +158,10 @@ At the end a self-test runs that reports what works and what does not.
 - One line in `/etc/pve/priv/authorized_keys`: the SSH key of the container may only start that helper script, and
   only from the address of the container. A copy of the file is made in `/root` first.
 - A log of the installation in `/var/log/maintool-setup.log` (without passwords or keys).
+- In the container: the tool in `/opt/maintool`, owned by root (the service cannot change its own program), with its
+  Python packages in a folder of their own: fixed versions, each checked against its checksum (`requirements.txt`).
+  The service `maintool` runs in a strict sandbox: the installation first tries every protection and only switches on
+  what the container allows (`/etc/systemd/system/maintool.service.d/hardening.conf`).
 
 ## Updating and removing
 
@@ -180,7 +184,12 @@ node:
 
     bash maintool-setup.sh --update ID
 
-It asks for the language, and then for `yes` to continue (with `--yes` at the end it does not ask).
+It asks for the language, and then for `yes` to continue (with `--yes` at the end it does not ask). After that it
+carries on in the background (as a systemd service) and shows its output, so the update finishes even if the
+connection drops, for example in a console inside the tool itself, which restarts too.
+
+When updating, the setup file first puts the new version completely next to the old one (Python packages
+included) and only then switches and restarts. If the new version does not answer, the old one comes back by itself.
 
 From version 1.5.2 on, the tool can start this itself: **Update the tool** then shows **Update through node X**, for
 the node where the tool's container is. Log in to the console of that node as root@pam (the button opens that window)
@@ -188,7 +197,8 @@ and confirm with your password of the tool. The tool then types one command in t
 setup file from its own container (`pct pull`), checks the fingerprint and starts
 `maintool-setup.sh --update ID --yes` in the background. The tool restarts in between; the window shows when it is
 done, and the report stays on the node in `/var/log/maintool-setup.log`. Without a login as root@pam the tool cannot
-start anything on a node.
+start anything on a node. A tool older than 1.5.2 does not have this button yet: first update it to 1.5.2 through the
+page (choose the ZIP of v1.5.2 under Update the tool), or run the setup file on the node yourself as above.
 
 Removing everything again (the container, the access key, the line in `authorized_keys` and, if no other Maintool
 uses them, the user and the helper script):

@@ -442,6 +442,8 @@ check("venster sleutels: uitleg en knop voor opnieuw inloggen", 'id="key-old"' i
 
 # ================================================================ J. bijwerken via de node
 print("--- J. bijwerken via de node")
+RUNNING = main.VERSION
+main.VERSION = "1.5.2"   # alsof 1.5.2 draait en 1.5.3 klaarstaat (ook als deze test in een latere versie draait)
 import socket  # noqa: E402
 
 ME_CT = {"vmid": 110, "type": "lxc", "node": "pve2", "status": "running", "name": socket.gethostname(), "tags": "maintool;infra"}
@@ -606,7 +608,7 @@ for nl in ("Log eerst in op de console van node {0} als root@pam", "Het starten 
            "Er loopt al een update via node {0}; wacht tot die klaar is"):
     text = nl.replace("{0}", "pve2").replace("{1}", "x")
     check(f"melding vertaald: {nl[:40]}…", main.translate(text, "en") != text and main.translate(text, "de") != text)
-check("versie 1.5.2", main.VERSION == "1.5.2", main.VERSION)
+check("versie 1.5.2 of later", main.version_key(RUNNING) >= main.version_key("1.5.2"), RUNNING)
 
 print()
 print("ALLES GOED" if not FAILED else f"FOUT ({len(FAILED)}): {FAILED}")

@@ -1,0 +1,10 @@
+# De Python-pakketten van de tool. Hieruit maakt de maker requirements.txt, met vaste versies en controlesommen:
+#   uv pip compile requirements.in --universal --python-version 3.11 --generate-hashes --no-header -o requirements.txt
+# install.sh installeert alleen wat in requirements.txt staat (pip --require-hashes --only-binary :all:).
+fastapi
+uvicorn
+uvloop          # snellere eventloop voor uvicorn
+httptools       # snellere HTTP-parser voor uvicorn
+websockets      # de console (main.py) en websockets in uvicorn
+proxmoxer
+requests

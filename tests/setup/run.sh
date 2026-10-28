@@ -298,6 +298,30 @@ check "gestopt" rc 1
 check "afloop in de container: mislukt, met de reden en het logboek" result \
     "r['ok'] is False and r['code'] == 'node_failed' and 'installeren' in r['detail'].lower() and r['log'].endswith('setup.log') and r['previous'] == '0.9'"
 
+prepare bijwerken-nieuwe-versie-start-niet; here 109 hier ""; EXTRA=(INSTALL_FAIL=1 INSTALL_RC=3); run '' --update 109 --yes
+check "gestopt, met de melding dat de vorige versie weer draait" bash -c "[[ $RC == 1 ]] && grep -qF 'de vorige versie is teruggezet en draait weer' '$W/out'"
+check "afloop in de container: mislukt, vorige versie terug" result "r['ok'] is False and 'teruggezet' in r['detail']"
+check "niet verder met het hulpscript en de zelftest" bash -c "! test -e '$W/sbin/maintool-agent' && ! grep -qF 'Zelftest' '$W/out'"
+prepare bijwerken-ook-de-oude-start-niet; here 109 hier ""; EXTRA=(INSTALL_FAIL=1 INSTALL_RC=4); run '' --update 109 --yes
+check "gestopt, met wat je dan doet" bash -c "[[ $RC == 1 ]] && grep -qF 'journalctl -u maintool -n 50' '$W/out'"
+
+# --- getypt in een terminal: na de vraag verder op de achtergrond (een console in de tool zelf valt weg bij de herstart)
+prepare bijwerken-op-de-achtergrond; here 109 hier ""; EXTRA=(MT_HANDOVER=1); run $'ja\n' --update 109
+check "afgerond" rc 0
+check "na het ja verder als dienst, met dezelfde taal en container" grep -qE "^systemd-run --quiet --collect --unit=maintool-update-[0-9]+ /bin/bash $W/maintool-setup.sh --lang nl --update 109 --yes\$" "$W/calls"
+check "gezegd dat het op de achtergrond doorloopt, en waar het verslag staat" has "$W/out" "Het bijwerken loopt vanaf hier op de achtergrond (maintool-update-"
+check "de uitvoer van de dienst is te zien" bash -c "grep -qF 'Gestart zonder vragen (--yes).' '$W/out' && grep -qF 'Klaar: container 109 draait nu versie' '$W/out'"
+check "één keer geïnstalleerd, door de dienst" lines "$W/calls" "MAINTOOL_SETUP=1 bash install.sh" 1
+check "afloop gemeld" result "r['ok'] is True"
+prepare bijwerken-op-de-achtergrond-nee; here 109 hier ""; EXTRA=(MT_HANDOVER=1); run $'nee\n' --update 109
+check "nee gezegd: gestopt, geen dienst gestart, niets veranderd" bash -c "[[ $RC == 1 ]] && ! grep -q '^systemd-run' '$W/calls'"; check "er is niets veranderd" nothing_changed
+prepare bijwerken-op-de-achtergrond-mislukt; here 109 hier ""; EXTRA=(MT_HANDOVER=1 INSTALL_FAIL=1 INSTALL_RC=3); run $'ja\n' --update 109
+check "mislukt: exitcode 1, met de reden uit de dienst" bash -c "[[ $RC == 1 ]] && grep -qF 'de vorige versie is teruggezet en draait weer' '$W/out'"
+prepare bijwerken-achtergrond-start-niet; here 109 hier ""; EXTRA=(MT_HANDOVER=1 HANDOVER_FAIL=1); run $'ja\n' --update 109
+check "systemd-run lukt niet: gestopt met uitleg, niets geïnstalleerd" bash -c "[[ $RC == 1 ]] && grep -qF 'niet op de achtergrond worden gestart' '$W/out' && ! grep -qF 'bash install.sh' '$W/calls'"
+prepare bijwerken-als-dienst-niet-nog-eens; here 109 hier ""; EXTRA=(MT_HANDOVER=1 INVOCATION_ID=al-een-dienst); run '' --update 109 --yes
+check "al als dienst gestart (zoals via de knop): niet nog eens naar de achtergrond" bash -c "[[ $RC == 0 ]] && ! grep -q '^systemd-run' '$W/calls'"
+
 prepare bijwerken-zelftest-fout; here 109 hier ""; EXTRA=(SELFTEST_FAIL=1); run '' --update 109 --yes
 check "afgerond" rc 0; check "afloop: bijgewerkt, zelftest met een fout" result "r['ok'] is True and r['selftest'] == 'fout'"
 
