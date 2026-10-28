@@ -278,6 +278,38 @@ check "afgerond" rc 0; check "juiste container gekozen" has "$W/out" "Container 
 prepare bijwerken-geen-maintool-in-container; here 105 hier ""; EXTRA=(NO_TOOL=1); run $'ja\n' --update 105
 check "gestopt" rc 1; check "melding" has "$W/out" "In container 105 staat geen Proxmox Maintool."; check "er is niets veranderd" nothing_changed
 
+# --- zonder vragen (zo start de tool het zelf via de console van een node) en met de afloop in de container
+RES=var/lib/maintool-update/result.json
+result() { python3 -c 'import json, sys; r = json.load(open(sys.argv[1])); sys.exit(0 if eval(sys.argv[2], {}, {"r": r}) else 1)' "$W/ct/$RES" "$1"; }
+check "het setup-bestand zegt dat het zonder vragen kan bijwerken" grep -qx 'UNATTENDED=1' "$BASE/setup.sh"
+
+prepare bijwerken-zonder-vragen; here 109 hier ""; run '' --update 109 --yes
+check "afgerond, zonder invoer" rc 0; check "geen vraag gesteld" hasnt "$W/out" 'Typ "ja"'; check "gezegd dat er niet gevraagd is" has "$W/out" "Gestart zonder vragen (--yes)."
+check "installatie, hulpscript en zelftest" bash -c "grep -qF 'MAINTOOL_SETUP=1 bash install.sh' '$W/calls' && test -x '$W/sbin/maintool-agent' && grep -qF 'Zelftest' '$W/out'"
+check "afloop in de container: gelukt, via de node, met versies en zelftest" result \
+    "r['ok'] is True and r['via'] == 'node' and r['previous'] == '0.9' and r['version'] == '$(bash $BASE/setup.sh --version)' and r['selftest'] == 'ok' and r['node'] == '$LOCAL' and r['time'] > 0"
+check "afloop leesbaar voor de tool, in één keer neergezet" bash -c "grep -qF '/var/lib/maintool-update/result.json.tmp --perms 644' '$W/calls' && grep -qF 'mv -f /var/lib/maintool-update/result.json.tmp' '$W/calls'"
+
+prepare bijwerken-zonder-vragen-zonder-id; here 111 hier "maintool"; run '' --update --yes
+check "afgerond" rc 0; check "juiste container gekozen" has "$W/out" "Container 111 ("; check "afloop gemeld" result "r['ok'] is True"
+
+prepare bijwerken-zonder-vragen-mislukt; here 109 hier ""; EXTRA=(INSTALL_FAIL=1); run '' --update 109 --yes
+check "gestopt" rc 1
+check "afloop in de container: mislukt, met de reden en het logboek" result \
+    "r['ok'] is False and r['code'] == 'node_failed' and 'installeren' in r['detail'].lower() and r['log'].endswith('setup.log') and r['previous'] == '0.9'"
+
+prepare bijwerken-zelftest-fout; here 109 hier ""; EXTRA=(SELFTEST_FAIL=1); run '' --update 109 --yes
+check "afgerond" rc 0; check "afloop: bijgewerkt, zelftest met een fout" result "r['ok'] is True and r['selftest'] == 'fout'"
+
+prepare bijwerken-met-vraag-meldt-ook; here 109 hier ""; run $'ja\n' --update 109
+check "afgerond" rc 0; check "ook zonder --yes wordt de afloop gemeld" result "r['ok'] is True"
+
+prepare bijwerken-geweigerd-meldt-niets; here 109 hier ""; run $'nee\n' --update 109
+check "gestopt" rc 1; check "geen afloop gemeld: er is niets begonnen" test ! -e "$W/ct/$RES"
+
+prepare bijwerken-op-verkeerde-node-met-yes; here 109 elders ""; run '' --update 109 --yes
+check "gestopt" rc 1; check "er is niets veranderd" nothing_changed; check "geen afloop gemeld" test ! -e "$W/ct/$RES"
+
 # =============================================================== verwijderen
 seed_installed() {   # doet alsof CT 111 eerder met dit bestand is geïnstalleerd
     here 111 hier "maintool"; printf 'arch: amd64\nhostname: maintool\ntags: maintool\n' >"$W/fix/config-111"
@@ -419,6 +451,7 @@ prepare hulp-en-uitleg-in-drie-talen; LANGARGS=()
 run '' --help;   check "hulp standaard in het Engels" has "$W/out" "Usage (as root, on a Proxmox VE node):"
 run '' --hilfe;  check "Hilfe in het Duits" has "$W/out" "Verwendung (als root, auf einem Proxmox-VE-Node):"
 run '' --hulp;   check "hulp in het Nederlands" has "$W/out" "Gebruik (als root, op een Proxmox VE-node):"
+check "hulp noemt bijwerken zonder vragen" has "$W/out" "--update ID --yes"
 LANGARGS=(--lang de); run '' --help; check "--lang de --help" has "$W/out" "Verwendung (als root"
 LANGARGS=()
 run '' --readme;   check "readme: Engels" has "$W/out" "Made by Eduard Wichers."

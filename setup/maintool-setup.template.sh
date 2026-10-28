@@ -5,6 +5,7 @@
 # Run as root on a Proxmox VE node. It asks in English, Nederlands or Deutsch:
 #     bash maintool-setup.sh                  install (asks a few questions and asks for confirmation)
 #     bash maintool-setup.sh --update [ID]    update the tool in an existing container
+#     bash maintool-setup.sh --update ID --yes   the same without questions (the tool starts it like this itself)
 #     bash maintool-setup.sh --uninstall ID   remove everything this file created
 #     bash maintool-setup.sh --help           explanation
 #
@@ -32,6 +33,15 @@ CREATED=""
 UI=en          # taal van de vragen en meldingen: nl, en of de (zie het begin, onderaan)
 LANG_FIXED=""  # met --lang meegegeven: dan wordt niet naar de taal gevraagd
 STEP=""
+YES=""         # --yes bij --update: niet vragen of het door mag gaan
+# Dit setup-bestand kan bijwerken zonder vragen (--lang xx --update ID --yes) en meldt de afloop in de container. Zo
+# start de tool het zelf, via de console van de node (zie "bijwerken via de node" in main.py); de tool kijkt naar
+# deze regel voordat hij dat aanbiedt.
+UNATTENDED=1
+REPORT_CT=""   # de container waarin de afloop van het bijwerken wordt gemeld (zie report_result)
+OLD_VERSION=""
+REPORTED=""
+DIED=""
 
 # ---------------------------------------------------------------- teksten (Nederlands, Engels, Duits)
 
@@ -270,6 +280,7 @@ msg update_done    "Klaar: container %s draait nu versie %s. Herlaad de pagina i
 msg selftest_bad   "LET OP: de zelftest meldde een fout (zie hierboven)." "NOTE: the self-test reported an error (see above)." \
                    "ACHTUNG: Der Selbsttest hat einen Fehler gemeldet (siehe oben)."
 msg log_updated    "bijwerken klaar, zelftest: %s" "update done, self-test: %s" "Aktualisierung fertig, Selbsttest: %s"
+msg unattended     "Gestart zonder vragen (--yes)." "Started without questions (--yes)." "Ohne Fragen gestartet (--yes)."
 msg give_id        "Geef het ID van de container mee: bash %s --uninstall ID" "Give the ID of the container: bash %s --uninstall ID" \
                    "Gib die ID des Containers mit an: bash %s --uninstall ID"
 msg no_label       "Container %s heeft het label '%s' niet en is dus niet door dit bestand aangemaakt. Ik verwijder hem niet." \
@@ -317,9 +328,34 @@ hint() {   # na een afgebroken installatie: zeggen hoe je de half aangemaakte co
         { tf hint_cleanup "$CTID" "$SELF" "$CTID"; printf '\n'; } >&2
     fi
 }
-die()  { printf '\n%s: %s\n' "$(T stopped)" "$*" >&2; log "$(T stopped): $*"; hint; exit 1; }
+die()  { DIED="$*"; printf '\n%s: %s\n' "$(T stopped)" "$*" >&2; log "$(T stopped): $*"; hint; exit 1; }
 
 cleanup() { if [[ -n $TMP && -d $TMP ]]; then rm -rf "$TMP"; fi; }
+report_result() {   # report_result ok|fout [reden]: de afloop van --update in de container, waar de tool hem laat zien
+    local file
+    REPORTED=1
+    [[ -n $REPORT_CT ]] || return 0
+    file=$(mktemp) || return 0
+    MT_OK=$1 MT_WHY=${2:-} MT_VERSION=$VERSION MT_OLD=$OLD_VERSION MT_SELFTEST=${SELFTEST:-} MT_NODE=${NODE:-} MT_LOG=$LOG \
+    python3 -c 'import json, os, time
+ok = os.environ["MT_OK"] == "ok"
+r = {"ok": ok, "via": "node", "version": os.environ["MT_VERSION"], "previous": os.environ["MT_OLD"], "node": os.environ["MT_NODE"],
+     "time": int(time.time())}
+if ok:
+    r["selftest"] = os.environ["MT_SELFTEST"] or "?"
+else:
+    r.update(code="node_failed", detail=" ".join(os.environ["MT_WHY"].split())[:300], log=os.environ["MT_LOG"])
+print(json.dumps(r))' >"$file" 2>/dev/null \
+        && pct exec "$REPORT_CT" -- mkdir -p /var/lib/maintool-update >/dev/null 2>&1 \
+        && pct push "$REPORT_CT" "$file" /var/lib/maintool-update/result.json.tmp --perms 644 >/dev/null 2>&1 \
+        && pct exec "$REPORT_CT" -- mv -f /var/lib/maintool-update/result.json.tmp /var/lib/maintool-update/result.json >/dev/null 2>&1 \
+        || true
+    rm -f "$file"
+}
+finish() {   # bij elk einde: een afgebroken --update meldt dat nog in de container, daarna opruimen
+    if [[ $MODE == update && -n $REPORT_CT && -z $REPORTED ]]; then report_result fout "${DIED:-$STEP}"; fi
+    cleanup
+}
 on_error() {
     (( BASH_SUBSHELL == 0 )) || return 0
     { printf '\n'; tf went_wrong "$STEP" "$1"; printf '\n'; } >&2
@@ -327,7 +363,7 @@ on_error() {
     { tf logbook "$LOG"; printf '\n'; } >&2
     log "$(tf log_error "$STEP" "$1")"
 }
-trap cleanup EXIT
+trap finish EXIT
 trap 'on_error $LINENO' ERR
 
 api() { pvesh get "$1" --output-format json "${@:2}"; }   # hetzelfde antwoord als de Proxmox-API
@@ -412,6 +448,7 @@ Proxmox Maintool $VERSION - onderhoudstool voor Proxmox VE, door Eduard Wichers
 Gebruik (als root, op een Proxmox VE-node):
   bash $SELF                  installeren: maakt een kleine container en zet de tool erin
   bash $SELF --update [ID]    de tool in een bestaande container bijwerken naar versie $VERSION
+  bash $SELF --update ID --yes   hetzelfde, zonder te vragen of het door mag gaan
   bash $SELF --uninstall ID   de container, de toegangssleutel en het hulpscript weer verwijderen
   bash $SELF --leesmij        de volledige uitleg tonen (Engels: --readme, Duits: --liesmich)
   bash $SELF --licentie       de licentie tonen
@@ -426,6 +463,7 @@ Proxmox Maintool $VERSION - Wartungstool für Proxmox VE, von Eduard Wichers
 Verwendung (als root, auf einem Proxmox-VE-Node):
   bash $SELF                  installieren: legt einen kleinen Container an und bringt das Tool hinein
   bash $SELF --update [ID]    das Tool in einem vorhandenen Container auf Version $VERSION aktualisieren
+  bash $SELF --update ID --yes   dasselbe, ohne zu fragen, ob es weitergehen darf
   bash $SELF --uninstall ID   den Container, den Zugriffsschlüssel und das Hilfsskript wieder entfernen
   bash $SELF --liesmich       die vollständige Anleitung zeigen (Niederländisch: --leesmij, Englisch: --readme)
   bash $SELF --lizenz         die Lizenz zeigen
@@ -440,6 +478,7 @@ Proxmox Maintool $VERSION - maintenance tool for Proxmox VE, by Eduard Wichers
 Usage (as root, on a Proxmox VE node):
   bash $SELF                  install: creates a small container and puts the tool in it
   bash $SELF --update [ID]    update the tool in an existing container to version $VERSION
+  bash $SELF --update ID --yes   the same, without asking whether to continue
   bash $SELF --uninstall ID   remove the container, the access key and the helper script again
   bash $SELF --readme         show the full explanation (Dutch: --leesmij, German: --liesmich)
   bash $SELF --license        show the license
@@ -1067,6 +1106,8 @@ do_update() {
     local found old answer
     MODE=update
     CTID=${1:-}
+    if [[ $CTID == --yes ]]; then CTID=""; YES=1; fi
+    if [[ ${2:-} == --yes ]]; then YES=1; fi
     ask_language
     need_node
     check_addresses
@@ -1088,8 +1129,13 @@ print(" ".join(str(g["vmid"]) for g in json.load(sys.stdin) if g.get("type") == 
     [[ $CT_IP =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]] || die "$(tf no_ct_ip "$CTID")"
     say ""
     say "$(tf update_intro "$CTID" "$CT_IP" "$old" "$VERSION")"
-    read_line answer "$(tf go_prompt "$(T yes_word)")"
-    [[ ${answer,,} == "$(T yes_word)" ]] || die "$(T stopped_by_you)"
+    if [[ -n $YES ]]; then
+        say "$(T unattended)"
+    else
+        read_line answer "$(tf go_prompt "$(T yes_word)")"
+        [[ ${answer,,} == "$(T yes_word)" ]] || die "$(T stopped_by_you)"
+    fi
+    REPORT_CT=$CTID OLD_VERSION=$old   # vanaf hier wordt de afloop in de container gemeld
     install_in_container
     install_agent
     allow_key
@@ -1098,6 +1144,7 @@ print(" ".join(str(g["vmid"]) for g in json.load(sys.stdin) if g.get("type") == 
     say "$(tf update_done "$CTID" "$VERSION")"
     [[ $SELFTEST == ok ]] || say "$(T selftest_bad)"
     log "$(tf log_updated "$SELFTEST")"
+    report_result ok
 }
 
 # ---------------------------------------------------------------- verwijderen
@@ -1229,7 +1276,7 @@ STEP=$(T step_prepare)
 
 case "${1:-}" in
     "" | install | --install)          do_install ;;
-    update | --update)                 do_update "${2:-}" ;;
+    update | --update)                 do_update "${2:-}" "${3:-}" ;;
     uninstall | --uninstall)           do_uninstall "${2:-}" ;;
     --leesmij)                         unpack; cat "$TMP/pkg/README.md" ;;
     --readme)                          show_doc README.md ;;

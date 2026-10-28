@@ -1508,6 +1508,16 @@ SYSTEM_DARK.addEventListener("change", () => { if (!BG) paint(null); });
     <p class="toolbar" style="margin-bottom:0"><input type="file" id="su-file" style="flex:1;min-width:0"> <button id="su-check" class="primary">Controleren</button></p>
   </div>
   <div id="su-verdict" class="verdict" hidden></div>
+  <div id="su-node" class="sugh" hidden>
+    <p><b>Bijwerken via de node</b></p>
+    <p id="su-nodetext"></p>
+    <p class="small">Dat doet het setup-bestand op die node. De tool start het daar voor je, via de console van de node; log daarvoor in als root@pam (alleen dat account krijgt daar meteen een shell als root). De tool herstart tussendoor; dit venster laat zien wanneer het klaar is.</p>
+    <details class="small"><summary>Wat de tool op de node doet</summary><p>Het setup-bestand uit de container van de tool halen (pct pull), de vingerafdruk controleren en het op de achtergrond starten (systemd-run): bash maintool-setup.sh --update met het nummer van de container, zonder vragen. Het verslag staat daarna op de node in /var/log/maintool-setup.log.</p></details>
+    <p class="small" id="su-nodecon"></p>
+    <p><label for="su-nodepass">Je wachtwoord van de tool, ter bevestiging</label><br>
+       <input type="password" id="su-nodepass" autocomplete="current-password" style="margin-top:6px;width:100%"></p>
+    <p class="toolbar" style="margin-bottom:0"><button id="su-nodelogin">Inloggen als root@pam</button> <span class="grow"></span><button id="su-nodego" class="primary"></button></p>
+  </div>
   <div id="su-confirm" hidden>
     <p class="small">Wat er gebeurt: de tool bewaart een kopie van de huidige versie, installeert de nieuwe en herstart. Antwoordt de nieuwe versie daarna niet, dan komt de oude vanzelf terug. De pagina is ongeveer een halve minuut niet bereikbaar.</p>
     <p><label for="su-pass">Je wachtwoord van de tool, ter bevestiging</label><br>
@@ -1854,6 +1864,10 @@ SYSTEM_DARK.addEventListener("change", () => { if (!BG) paint(null); });
   <p class="small">Met een beveiligingssleutel, zoals een YubiKey, of een passkey log je in zonder wachtwoord. Je kunt hem ook na je wachtwoord als extra stap laten vragen.</p>
   <p class="small warn" id="key-ip" hidden>Beveiligingssleutels werken alleen als je de tool via een naam opent (bijvoorbeeld je Cloudflare-adres), niet via een IP-adres. Open de tool via zo'n naam om een sleutel toe te voegen.</p>
   <div class="wrapless"><table><thead><tr><th>Naam</th><th>Adres</th><th>Toegevoegd</th><th>Laatst gebruikt</th><th></th></tr></thead><tbody id="key-list"></tbody></table></div>
+  <div class="box" id="key-old" hidden>
+    <p class="small warn">Je logt zonder wachtwoord in. Een sleutel toevoegen of verwijderen kan daarom alleen vlak na het inloggen: log opnieuw in (via SSO of met een sleutel) en open dit venster binnen vijf minuten.</p>
+    <p style="text-align:right;margin-bottom:8px"><button id="key-relogin">Opnieuw inloggen</button></p>
+  </div>
   <div class="form wide key-pwrow" style="margin-top:12px">
     <label for="key-pw">Je wachtwoord</label><input id="key-pw" type="password" maxlength="300" autocomplete="current-password" placeholder="ter bevestiging van een wijziging">
   </div>
@@ -3920,7 +3934,23 @@ const I18N = {
   "Geen melding meer voor versie {0}. Bijwerken kan altijd via het menu, bij Tool bijwerken.": "No more message for version {0}. You can always update through the menu, under Update the tool.",
   "Log in met een account dat in Proxmox een console op de nodes mag openen (het recht Sys.Console): kies @pam voor een account van de node zelf, zoals root, of @pve voor een account van Proxmox. De tool bewaart je wachtwoord niet en onthoudt het inloggen alleen voor deze sessie, hooguit een uur.": "Log in with an account that may open a console on the nodes in Proxmox (the right Sys.Console): choose @pam for an account of the node itself, such as root, or @pve for an account of Proxmox. The tool does not store your password and only remembers the login for this session, at most one hour.",
   "Alleen root@pam krijgt meteen een shell. Met elk ander account vraagt de console zelf nog een keer om in te loggen op de node.": "Only root@pam gets a shell right away. With any other account the console itself asks you to log in on the node once more.",
-  "pam: een gebruiker van de node zelf (Linux). pve: een gebruiker van Proxmox zelf.": "pam: a user of the node itself (Linux). pve: a user of Proxmox itself."
+  "pam: een gebruiker van de node zelf (Linux). pve: een gebruiker van Proxmox zelf.": "pam: a user of the node itself (Linux). pve: a user of Proxmox itself.",
+  "Je logt zonder wachtwoord in. Een sleutel toevoegen of verwijderen kan daarom alleen vlak na het inloggen: log opnieuw in (via SSO of met een sleutel) en open dit venster binnen vijf minuten.": "You log in without a password. Adding or removing a key is therefore only possible right after logging in: log in again (via SSO or with a key) and open this window within five minutes.",
+  "Bijwerken via de node": "Update through the node",
+  "Dat doet het setup-bestand op die node. De tool start het daar voor je, via de console van de node; log daarvoor in als root@pam (alleen dat account krijgt daar meteen een shell als root). De tool herstart tussendoor; dit venster laat zien wanneer het klaar is.": "The setup file does that on that node. The tool starts it there for you, through the console of the node; for that, log in as root@pam (only that account gets a shell as root there right away). The tool restarts in between; this window shows when it is done.",
+  "Wat de tool op de node doet": "What the tool does on the node",
+  "Het setup-bestand uit de container van de tool halen (pct pull), de vingerafdruk controleren en het op de achtergrond starten (systemd-run): bash maintool-setup.sh --update met het nummer van de container, zonder vragen. Het verslag staat daarna op de node in /var/log/maintool-setup.log.": "Fetch the setup file from the tool's container (pct pull), check the fingerprint and start it in the background (systemd-run): bash maintool-setup.sh --update with the number of the container, without questions. The report is then on the node in /var/log/maintool-setup.log.",
+  "Inloggen als root@pam": "Log in as root@pam",
+  "Versie {0} verandert ook de installatie zelf (bijvoorbeeld de Python-pakketten of de systemd-dienst); dat mag de pagina niet. Dat gebeurt op node {1}, waar de container van de tool staat (CT {2}).": "Version {0} also changes the installation itself (for example the Python packages or the systemd service); the page may not do that. It happens on node {1}, where the tool's container is (CT {2}).",
+  "Bijwerken via node {0}": "Update through node {0}",
+  "Ingelogd op de console van de node als {0}.": "Logged in to the console of the node as {0}.",
+  "De console is open als {0}; daarmee kan de tool het setup-bestand niet starten. Log in als root@pam.": "The console is open as {0}; with that the tool cannot start the setup file. Log in as root@pam.",
+  "Nog niet ingelogd op de console van de node.": "Not logged in to the console of the node yet.",
+  "De tool start het setup-bestand op node {0}…": "The tool is starting the setup file on node {0}…",
+  "Gestart op node {0}. Het setup-bestand werkt de tool nu bij en herstart hem; dat duurt een paar minuten. Je kunt dit venster open laten.": "Started on node {0}. The setup file is now updating the tool and restarting it; that takes a few minutes. You can leave this window open.",
+  "Bijgewerkt naar versie {0} via node {1}. De pagina wordt opnieuw geladen.": "Updated to version {0} through node {1}. The page is being reloaded.",
+  "Het bijwerken via node {0} is niet gelukt ({1}). Het verslag staat op die node in {2}.": "Updating through node {0} did not succeed ({1}). The report is on that node in {2}.",
+  "Na twintig minuten nog geen bericht van node {0}. Kijk op die node in /var/log/maintool-setup.log, of herlaad de pagina en kijk welke versie er draait.": "No word from node {0} after twenty minutes. Look on that node in /var/log/maintool-setup.log, or reload the page and see which version is running."
  },
  "de": {
   "Vernieuwen: haalt het overzicht direct opnieuw op bij Proxmox": "Aktualisieren: holt die Übersicht sofort neu von Proxmox",
@@ -5830,12 +5860,31 @@ const I18N = {
   "Geen melding meer voor versie {0}. Bijwerken kan altijd via het menu, bij Tool bijwerken.": "Keine Meldung mehr für Version {0}. Aktualisieren kannst du immer über das Menü, unter Tool aktualisieren.",
   "Log in met een account dat in Proxmox een console op de nodes mag openen (het recht Sys.Console): kies @pam voor een account van de node zelf, zoals root, of @pve voor een account van Proxmox. De tool bewaart je wachtwoord niet en onthoudt het inloggen alleen voor deze sessie, hooguit een uur.": "Melde dich mit einem Konto an, das in Proxmox eine Konsole auf den Nodes öffnen darf (das Recht Sys.Console): Wähle @pam für ein Konto des Nodes selbst, wie root, oder @pve für ein Konto von Proxmox. Das Tool speichert dein Passwort nicht und merkt sich die Anmeldung nur für diese Sitzung, höchstens eine Stunde.",
   "Alleen root@pam krijgt meteen een shell. Met elk ander account vraagt de console zelf nog een keer om in te loggen op de node.": "Nur root@pam bekommt sofort eine Shell. Mit jedem anderen Konto fragt die Konsole selbst noch einmal nach der Anmeldung auf dem Node.",
-  "pam: een gebruiker van de node zelf (Linux). pve: een gebruiker van Proxmox zelf.": "pam: ein Benutzer des Nodes selbst (Linux). pve: ein Benutzer von Proxmox selbst."
+  "pam: een gebruiker van de node zelf (Linux). pve: een gebruiker van Proxmox zelf.": "pam: ein Benutzer des Nodes selbst (Linux). pve: ein Benutzer von Proxmox selbst.",
+  "Je logt zonder wachtwoord in. Een sleutel toevoegen of verwijderen kan daarom alleen vlak na het inloggen: log opnieuw in (via SSO of met een sleutel) en open dit venster binnen vijf minuten.": "Du meldest dich ohne Passwort an. Einen Schlüssel hinzufügen oder entfernen geht deshalb nur direkt nach der Anmeldung: Melde dich erneut an (über SSO oder mit einem Schlüssel) und öffne dieses Fenster innerhalb von fünf Minuten.",
+  "Bijwerken via de node": "Über den Node aktualisieren",
+  "Dat doet het setup-bestand op die node. De tool start het daar voor je, via de console van de node; log daarvoor in als root@pam (alleen dat account krijgt daar meteen een shell als root). De tool herstart tussendoor; dit venster laat zien wanneer het klaar is.": "Das erledigt die Setup-Datei auf diesem Node. Das Tool startet sie dort für dich, über die Konsole des Nodes; melde dich dafür als root@pam an (nur dieses Konto bekommt dort sofort eine Shell als root). Das Tool startet zwischendurch neu; dieses Fenster zeigt, wann es fertig ist.",
+  "Wat de tool op de node doet": "Was das Tool auf dem Node macht",
+  "Het setup-bestand uit de container van de tool halen (pct pull), de vingerafdruk controleren en het op de achtergrond starten (systemd-run): bash maintool-setup.sh --update met het nummer van de container, zonder vragen. Het verslag staat daarna op de node in /var/log/maintool-setup.log.": "Die Setup-Datei aus dem Container des Tools holen (pct pull), den Fingerabdruck prüfen und sie im Hintergrund starten (systemd-run): bash maintool-setup.sh --update mit der Nummer des Containers, ohne Fragen. Das Protokoll liegt danach auf dem Node in /var/log/maintool-setup.log.",
+  "Inloggen als root@pam": "Als root@pam anmelden",
+  "Versie {0} verandert ook de installatie zelf (bijvoorbeeld de Python-pakketten of de systemd-dienst); dat mag de pagina niet. Dat gebeurt op node {1}, waar de container van de tool staat (CT {2}).": "Version {0} ändert auch die Installation selbst (zum Beispiel die Python-Pakete oder den systemd-Dienst); das darf die Seite nicht. Das geschieht auf Node {1}, wo der Container des Tools liegt (CT {2}).",
+  "Bijwerken via node {0}": "Über Node {0} aktualisieren",
+  "Ingelogd op de console van de node als {0}.": "An der Konsole des Nodes als {0} angemeldet.",
+  "De console is open als {0}; daarmee kan de tool het setup-bestand niet starten. Log in als root@pam.": "Die Konsole ist als {0} offen; damit kann das Tool die Setup-Datei nicht starten. Melde dich als root@pam an.",
+  "Nog niet ingelogd op de console van de node.": "Noch nicht an der Konsole des Nodes angemeldet.",
+  "De tool start het setup-bestand op node {0}…": "Das Tool startet die Setup-Datei auf Node {0}…",
+  "Gestart op node {0}. Het setup-bestand werkt de tool nu bij en herstart hem; dat duurt een paar minuten. Je kunt dit venster open laten.": "Auf Node {0} gestartet. Die Setup-Datei aktualisiert das Tool jetzt und startet es neu; das dauert ein paar Minuten. Du kannst dieses Fenster offen lassen.",
+  "Bijgewerkt naar versie {0} via node {1}. De pagina wordt opnieuw geladen.": "Über Node {1} auf Version {0} aktualisiert. Die Seite wird neu geladen.",
+  "Het bijwerken via node {0} is niet gelukt ({1}). Het verslag staat op die node in {2}.": "Das Aktualisieren über Node {0} ist nicht gelungen ({1}). Das Protokoll liegt auf diesem Node in {2}.",
+  "Na twintig minuten nog geen bericht van node {0}. Kijk op die node in /var/log/maintool-setup.log, of herlaad de pagina en kijk welke versie er draait.": "Nach zwanzig Minuten noch keine Nachricht von Node {0}. Sieh auf diesem Node in /var/log/maintool-setup.log nach, oder lade die Seite neu und sieh, welche Version läuft."
  }
 };
 const LOCALE = { nl: "nl-NL", en: "en-GB", de: "de-DE" }[LANG];
+// Staat deze sleutel echt in dit object? Bij teksten die van buiten komen (een label, een naam) moet dat: een label
+// als "constructor" of "__proto__" geeft anders een ingebouwde functie van JavaScript terug, en dan loopt de pagina vast.
+function hasKey(o, k) { return o != null && Object.prototype.hasOwnProperty.call(o, k); }
 function t(s, ...a) {
-  const r = (I18N[LANG] || {})[s] ?? s;
+  const r = String(hasKey(I18N[LANG], s) ? I18N[LANG][s] : s);
   return a.length ? r.replace(/\{(\d)\}/g, (m, i) => a[i] ?? "") : r;
 }
 // De vaste teksten in de opmaak hierboven één keer vertalen. Op dit moment staan er nog geen gegevens van het cluster
@@ -5955,7 +6004,7 @@ function noSsh() { return UPD.ssh ? "" : `title="${esc(t("SSH naar de nodes is n
 
 // Online, maar via de API geen antwoord (zie NodeTrouble in main.py): zeggen waar het cluster hem zoekt en wat je doet.
 function nodeTrouble(n) {
-  const x = (DATA.node_trouble || {})[n.node];
+  const x = hasKey(DATA.node_trouble, n.node) ? DATA.node_trouble[n.node] : null;
   return !x ? "" : `
       <div class="small warn" data-f="trouble" style="white-space:normal">${esc(t("Deze node antwoordt niet via de Proxmox-API: {0} zoekt hem op {1} en krijgt geen antwoord.", DATA.connected_via || "?", x.ip || "?"))}
         ${esc(t("Meestal staat in /etc/hosts op {0} nog een oud adres. Zet daar het juiste adres achter de naam en herstart die node (of alleen de dienst: systemctl restart pve-cluster).", n.node))}</div>`;
@@ -6075,7 +6124,8 @@ function tagRgb(s) {
   return [h & 255, (h >> 8) & 255, (h >> 16) & 255].map(c => Math.round(c * 0.7 + 255 * 0.3));
 }
 function tagCss(tag) {
-  const own = (DATA.tag_style || {})[tag.toLowerCase()];
+  const key = String(tag).toLowerCase(), set = hasKey(DATA.tag_style, key) ? DATA.tag_style[key] : null;
+  const own = Array.isArray(set) && /^[0-9a-f]{6}$/i.test(set[0]) ? set : null;
   const rgb = own ? [0, 2, 4].map(i => parseInt(own[0].slice(i, i + 2), 16)) : tagRgb(tag);
   const fg = own && own[1] ? "#" + own[1] : (0.2126 * rgb[0] + 0.7152 * rgb[1] + 0.0722 * rgb[2]) / 255 > 0.6 ? "#000" : "#fff";
   return `background:rgb(${rgb.join(",")});color:${fg}`;
@@ -9301,7 +9351,7 @@ function topoTick(redraw = false) {   // de stroom bijwerken met de nieuwste tel
   }
   let upIn = 0, upOut = 0;
   for (const nd of TOPO.nodes) {
-    const r = (TOPO.rates || {})[nd.node];
+    const r = hasKey(TOPO.rates, nd.node) ? TOPO.rates[nd.node] : null;
     set(`u:${nd.node}`, r ? r.in : 0, r ? r.out : 0);
     if (r) { text(`u:${nd.node}`, topoPair(r.in, r.out)); upIn += r.in; upOut += r.out; }
     for (const s of TOPO.storages) {   // de schijven van de guests op deze node, verdeeld over hun opslag
@@ -9451,7 +9501,7 @@ $("#nl-save").onclick = () => {
 // zoals root, of een account van Proxmox (pve). Wie de console de eerste keer opent, logt daarmee in; de tool onthoudt
 // dat alleen voor deze sessie, hooguit een uur. Deze browser onthoudt de gebruiker en de realm, nooit het wachtwoord.
 const NC_KEY = "maintool_nodeconsole";
-let NCN = null, ncCode = false;
+let NCN = null, ncCode = false, NC_AFTER = null;   // NC_AFTER: na het inloggen dit doen in plaats van de terminal openen
 try {
   const saved = JSON.parse(localStorage.getItem(NC_KEY) || "null");
   if (saved && typeof saved.user === "string" && saved.user) $("#nc-user").value = saved.user.slice(0, 64);
@@ -9465,6 +9515,11 @@ async function openNodeConsole(node) {
   let s;
   try { s = await api("/api/nodeconsole"); } catch (e) { toast(e.message, "err"); return; }
   if (s.ready) return openTerm(`${t("Console")} – ${node} · ${s.user}`, `/api/nodeconsole/${encodeURIComponent(node)}`);
+  ncLogin(node, null);
+}
+function ncLogin(node, after, preset) {   // het inlogvenster; after: wat er na het inloggen gebeurt (anders de terminal)
+  NC_AFTER = after;
+  if (preset) { $("#nc-user").value = preset.user; $("#nc-realm").value = preset.realm; }
   NCN = node;
   $("#nc-title").textContent = t("Console van node {0}", node);
   $("#nc-pass").value = $("#nc-code").value = "";
@@ -9483,7 +9538,7 @@ function ncStep(code) {
   for (const el of document.querySelectorAll("#ncdlg .nc-code")) el.hidden = !code;
   $("#nc-go").textContent = code ? t("Bevestigen") : t("Inloggen");
 }
-$("#nc-cancel").onclick = () => $("#ncdlg").close();
+$("#nc-cancel").onclick = () => { NC_AFTER = null; $("#ncdlg").close(); };
 $("#ncdlg").addEventListener("close", () => { $("#nc-pass").value = $("#nc-code").value = ""; });
 $("#ncdlg").addEventListener("keydown", e => { if (e.key === "Enter" && e.target.matches("input")) { e.preventDefault(); $("#nc-go").click(); } });
 $("#nc-go").onclick = async () => {
@@ -9497,8 +9552,11 @@ $("#nc-go").onclick = async () => {
     if (!ncCode) try { localStorage.setItem(NC_KEY, JSON.stringify({ user: body.username, realm: body.realm })); } catch (e) {}
     if (s.need_code) { ncStep(true); $("#nc-pass").value = ""; $("#nc-code").focus(); }
     else if (s.ready) {
+      const after = NC_AFTER;
+      NC_AFTER = null;
       $("#ncdlg").close();
-      openTerm(`${t("Console")} – ${NCN} · ${s.user}`, `/api/nodeconsole/${encodeURIComponent(NCN)}`);
+      if (after) after(s);
+      else openTerm(`${t("Console")} – ${NCN} · ${s.user}`, `/api/nodeconsole/${encodeURIComponent(NCN)}`);
     }
   } catch (e) {
     ncMsg(e.message);
@@ -9533,7 +9591,9 @@ function showKeys() {
   $("#key-ip").hidden = !!where;
   $("#key-rp").textContent = KEYS.rp || "";
   $("#key-rpline").hidden = !where;
-  $("#key-add").disabled = !where || full || !window.PublicKeyCredential;
+  const stale = !KEYS.password && KEYS.recent === false;   // zonder wachtwoord: de inlog is langer dan vijf minuten geleden
+  $("#key-old").hidden = !stale;
+  $("#key-add").disabled = !where || full || !window.PublicKeyCredential || stale;
   for (const el of document.querySelectorAll("#keydlg .key-pwrow")) el.hidden = !KEYS.password;
   $("#key-reqbox").hidden = !KEYS.password;
   $("#key-req").checked = KEYS.required;
@@ -9553,6 +9613,7 @@ const keyPwMissing = () => {
 };
 $("#keysopen").onclick = openKeys;
 $("#key-close").onclick = () => $("#keydlg").close();
+$("#key-relogin").onclick = () => $("#logout").click();
 $("#keydlg").addEventListener("close", () => { $("#key-pw").value = ""; });
 $("#key-add").onclick = async () => {
   const name = $("#key-name").value.trim();
@@ -11239,7 +11300,9 @@ function suRefusal(v) {
   if (v.code === "github_mismatch") return t("In de ZIP van versie {0} op GitHub zit het setup-bestand van versie {1}. Er is niets klaargezet; laat de maker dit weten.", v.wanted || "?", v.version || "?");
   return SU_REFUSED[v.code] ? t(SU_REFUSED[v.code]) : t("De controle is mislukt ({0}). Probeer het opnieuw.", v.code || "?");
 }
-function suOutcome(r) {   // de uitkomst van een installatie, zoals het bijwerkprogramma die heeft achtergelaten
+function suOutcome(r) {   // de uitkomst van een installatie, zoals het bijwerkprogramma (of het setup-bestand op een node) die heeft achtergelaten
+  if (r.via === "node") return r.ok ? t("Bijgewerkt naar versie {0} via node {1}. De pagina wordt opnieuw geladen.", r.version, r.node || "?")
+    : t("Het bijwerken via node {0} is niet gelukt ({1}). Het verslag staat op die node in {2}.", r.node || "?", r.detail || "?", r.log || "/var/log/maintool-setup.log");
   if (r.ok) return t("Bijgewerkt naar versie {0}. De pagina wordt opnieuw geladen.", r.version);
   if (r.code === "not_starting") return r.restored
     ? t("De nieuwe versie startte niet goed. De vorige versie ({0}) is teruggezet en draait weer.", r.previous || "?")
@@ -11249,7 +11312,8 @@ function suOutcome(r) {   // de uitkomst van een installatie, zoals het bijwerkp
 function suStep(step) {   // "kiezen", "bevestigen" of "bezig"
   $("#su-pick").hidden = step !== "kiezen" || !!(suStatus && !suStatus.available);
   $("#su-gh").hidden = step !== "kiezen" || !(suStatus && suStatus.github && suStatus.github.enabled);
-  $("#su-verdict").hidden = step === "kiezen";
+  $("#su-verdict").hidden = step === "kiezen" || step === "node";
+  $("#su-node").hidden = step !== "node";
   $("#su-confirm").hidden = $("#su-go").hidden = step !== "bevestigen";
   $("#su-close").disabled = step === "bezig";
 }
@@ -11285,6 +11349,7 @@ function suGithub(s) {   // het blok Van GitHub: wat de tool er het laatst zag, 
 }
 function suShowVerdict(v, label) {   // het oordeel over een bestand, gekozen of van GitHub gehaald
   suVerdict = v;
+  if (!v.ok && v.code === "needs_setup" && v.node_update && v.node_update.possible) { suNode(v.node_update); return; }
   if (!v.ok) { $("#su-state").className = "warn"; $("#su-state").textContent = suRefusal(v); return; }
   const notes = { same_version: "Dat is dezelfde versie als nu draait; installeren zet de bestanden opnieuw neer.",
     agent_changed: "Deze versie bevat een nieuwer hulpscript voor de nodes. Draai na het bijwerken ook op een node: bash maintool-setup.sh --update" };
@@ -11312,18 +11377,92 @@ async function openSelfUpdate() {
     suGithub(s);
     suMark(s);
     suStep("kiezen");
+    if (s.node && s.node.version !== s.version) { suWaitNode({ ...s.node, previous: s.version }); return; }
     if (!s.available)
       $("#su-state").textContent = t("Bijwerken via de pagina is op deze installatie nog niet ingeschakeld. Draai één keer op een node: bash maintool-setup.sh --update");
   } catch (e) { $("#su-state").textContent = e.message; }
+}
+// --- bijwerken via de node (zie "bijwerken via de node" in main.py). Een versie die meer verandert dan de pagina mag
+// installeren, installeert het setup-bestand op de node waar de container van de tool staat. De tool start het daar via
+// de console van die node; de beheerder logt daarvoor in als root@pam en bevestigt met zijn wachtwoord van de tool.
+let suPlan = null, suNodeBusy = false;
+async function suNode(plan) {
+  suPlan = plan;
+  $("#su-verdict").innerHTML = "";
+  $("#su-nodetext").textContent = t("Versie {0} verandert ook de installatie zelf (bijvoorbeeld de Python-pakketten of de systemd-dienst); dat mag de pagina niet. Dat gebeurt op node {1}, waar de container van de tool staat (CT {2}).", plan.version, plan.node, plan.ctid);
+  $("#su-nodego").textContent = t("Bijwerken via node {0}", plan.node);
+  $("#su-state").className = "";
+  $("#su-state").textContent = "";
+  suStep("node");
+  await suNodeConsole();
+}
+async function suNodeConsole() {   // is de console van de node al open, en als wie?
+  let v = null;
+  try { v = await api("/api/selfupdate/node"); } catch (e) { $("#su-state").className = "warn"; $("#su-state").textContent = e.message; }
+  const who = v && v.console, root = who === "root@pam";
+  $("#su-nodecon").textContent = root ? t("Ingelogd op de console van de node als {0}.", who)
+    : who ? t("De console is open als {0}; daarmee kan de tool het setup-bestand niet starten. Log in als root@pam.", who)
+    : t("Nog niet ingelogd op de console van de node.");
+  $("#su-nodecon").className = root ? "small" : "small warn";
+  $("#su-nodelogin").hidden = root;
+  $("#su-nodego").disabled = !root;
+  (root ? $("#su-nodepass") : $("#su-nodelogin")).focus();
+}
+$("#su-nodelogin").onclick = () => { if (suPlan) ncLogin(suPlan.node, suNodeConsole, { user: "root", realm: "pam" }); };
+$("#su-nodego").onclick = async () => {
+  const password = $("#su-nodepass").value;
+  if (!suPlan) return;
+  if (!password) { toast(t("Vul je wachtwoord in"), "err"); $("#su-nodepass").focus(); return; }
+  let r;
+  $("#su-nodego").disabled = true;
+  suNodeBusy = true;
+  $("#su-state").className = "";
+  $("#su-state").textContent = t("De tool start het setup-bestand op node {0}…", suPlan.node);
+  try {
+    r = await api("/api/selfupdate/node", { method: "POST", body: JSON.stringify({ password, sha256: suPlan.sha256 }) });
+  } catch (e) {
+    $("#su-state").className = "warn"; $("#su-state").textContent = e.message; $("#su-nodepass").value = "";
+    suNodeBusy = false; $("#su-nodego").disabled = false; return;
+  }
+  $("#su-nodepass").value = "";
+  suWaitNode(r);
+};
+function suWaitNode(r) {   // wachten op het setup-bestand op de node; de tool herstart tussendoor
+  UPDATING = true;
+  suNodeBusy = true;
+  suStep("bezig");
+  $("#su-verdict").hidden = true;
+  $("#su-close").disabled = false;   // het loopt op de node door, ook als dit venster dicht gaat
+  $("#su-state").className = "";
+  $("#su-state").textContent = t("Gestart op node {0}. Het setup-bestand werkt de tool nu bij en herstart hem; dat duurt een paar minuten. Je kunt dit venster open laten.", r.node);
+  const deadline = r.time * 1000 + 20 * 60000;
+  let seen = 0;
+  clearInterval(suTimer);
+  suTimer = setInterval(async () => {
+    let s = null;
+    try { const reply = await fetch("/api/selfupdate/status"); if (reply.ok) s = await reply.json(); } catch (e) {}
+    const res = s && s.result && s.result.via === "node" && s.result.time >= r.time - 2 ? s.result : null;
+    if (s && s.version === r.version && !res && !seen) seen = Date.now();   // de nieuwe versie draait al; het setup-bestand rondt nog af
+    const done = res || (seen && Date.now() - seen > 180000 ? { ok: true, via: "node", version: r.version, node: r.node } : null);
+    if (!done && Date.now() < deadline) return;
+    clearInterval(suTimer);
+    UPDATING = suNodeBusy = false;
+    $("#su-state").className = done && done.ok ? "" : "warn";
+    $("#su-state").textContent = done ? suOutcome({ node: r.node, ...done })
+      : t("Na twintig minuten nog geen bericht van node {0}. Kijk op die node in /var/log/maintool-setup.log, of herlaad de pagina en kijk welke versie er draait.", r.node);
+    if (done && done.ok) setTimeout(() => location.reload(), 2500);
+  }, 3000);
 }
 $("#selfupdate").onclick = openSelfUpdate;
 $("#su-new").onclick = openSelfUpdate;
 $("#su-close").onclick = () => $("#sudlg").close();
 $("#sudlg").addEventListener("cancel", e => { if ($("#su-close").disabled) e.preventDefault(); });   // niet wegklikken tijdens het installeren
 $("#sudlg").addEventListener("close", () => {
-  $("#su-pass").value = "";
-  if (suVerdict && suVerdict.ok && !UPDATING) fetch("/api/selfupdate/upload", { method: "DELETE" }).catch(() => {});   // niet gebruikt: weggooien
-  suVerdict = null;
+  $("#su-pass").value = $("#su-nodepass").value = "";
+  const unused = suVerdict && (suVerdict.ok || (suVerdict.node_update && suVerdict.node_update.possible));
+  if (unused && !UPDATING && !suNodeBusy) fetch("/api/selfupdate/upload", { method: "DELETE" }).catch(() => {});   // niet gebruikt: weggooien
+  if (suNodeBusy) { clearInterval(suTimer); UPDATING = suNodeBusy = false; }   // het loopt op de node gewoon door
+  suVerdict = suPlan = null;
 });
 $("#su-check").onclick = async () => {
   const file = $("#su-file").files[0];

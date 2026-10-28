@@ -161,7 +161,7 @@ def fake_update_check():
 main.update_check = fake_update_check
 
 # ---------------------------------------------------------------- inloggen: de beheerder en iemand die alleen leest
-main.login_guard.failures.clear()
+main.login_guard.reset()
 ROOT = session_of(call("POST", "/api/login", body={"username": main.APP_USER, "password": main.APP_PASSWORD})[2])
 PW = secrets.token_urlsafe(18)
 call("POST", "/api/users", ROOT, {"name": "lezer", "roles": [], "password": PW})
@@ -295,7 +295,7 @@ check("de ZIP van precies die tag", ASKED == [f"{main.GITHUB_SITE}/{main.UPDATE_
 check("het setup-bestand staat klaar voor de stap met het wachtwoord", main.UPDATE_FILE.read_bytes() == setup_file("1.10"))
 r = call("POST", "/api/selfupdate/apply", ROOT, {"password": "fout", "sha256": "0" * 64})
 check("installeren vraagt nog steeds het wachtwoord", r[0] == 403, str(r[1]))
-main.login_guard.failures.clear()
+main.login_guard.reset()
 main.UPDATE_FILE.unlink(missing_ok=True)
 
 # ================================================================ G. een bestand zelf aanleveren werkt nog net zo

@@ -34,11 +34,13 @@ from zoneinfo import ZoneInfo
 import requests
 import websockets
 from fastapi import Depends, FastAPI, HTTPException, Request, Response, WebSocket
+from fastapi.exceptions import RequestValidationError
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
 from proxmoxer import ProxmoxAPI
 from proxmoxer.core import ResourceException
 from pydantic import BaseModel, Field
 from requests.adapters import HTTPAdapter
+from starlette.datastructures import Headers, MutableHeaders
 
 # ---------------------------------------------------------------- configuratie
 HOSTS = [h.strip() for h in os.environ.get("PVE_HOSTS", "").split(",") if h.strip()]
@@ -76,8 +78,8 @@ if not HOSTS or not TOKEN_VALUE or not APP_PASSWORD:
 # ---------------------------------------------------------------- validatie
 KINDS = {"qemu", "lxc"}
 ACTIONS = {"start", "shutdown", "stop", "reboot"}
-NODE_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9\-]{0,62}$")
-SNAP_RE = re.compile(r"^[A-Za-z][A-Za-z0-9_\-]{1,39}$")
+NODE_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9\-]{0,62}\Z")
+SNAP_RE = re.compile(r"^[A-Za-z][A-Za-z0-9_\-]{1,39}\Z")
 
 
 def check_target(node: str, kind: str, vmid: int):
@@ -98,7 +100,10 @@ def check_snap(name: str):
 # Eigen inlogpagina met een sessiecookie. Het wachtwoordvenster van de browser (HTTP Basic) is hier bewust niet meer:
 # het externe adres van de tool zit achter Cloudflare Access en daar toont de browser dat venster niet.
 STATE_DIR = Path(os.environ.get("STATE_DIRECTORY", "/var/lib/maintool"))
-SESSION_COOKIE = "maintool_session"
+# __Host-: de browser neemt dit cookie alleen aan van de tool zelf (beveiligd, voor het hele adres, zonder domein).
+# Een andere site onder hetzelfde domein kan het dus niet neerzetten of overschrijven. Tot versie 1.5.1 heette het
+# maintool_session; dat oude cookie telt niet meer en wordt bij het inloggen opgeruimd.
+SESSION_COOKIE, OLD_SESSION_COOKIE = "__Host-maintool_session", "maintool_session"
 SESSION_SECONDS = int(float(os.environ.get("SESSION_HOURS", "12")) * 3600)
 
 
@@ -154,8 +159,18 @@ def auth_state() -> dict:
     return _auth["data"]
 
 
+# Elke wachtwoordcontrole kost 16 MB geheugen (scrypt). Er lopen er hooguit vier tegelijk; zo kunnen veel
+# inlogpogingen tegelijk de tool niet door zijn geheugen laten zakken. De rest wacht even op zijn beurt.
+HASH_SLOTS, HASH_WAIT = threading.BoundedSemaphore(4), 20
+
+
 def password_hash(password: str, salt: bytes) -> str:
-    return hashlib.scrypt(password.encode(), salt=salt, n=2**14, r=8, p=1, dklen=32).hex()
+    if not HASH_SLOTS.acquire(timeout=HASH_WAIT):
+        raise HTTPException(503, "De tool is even te druk om het wachtwoord te controleren; probeer het zo opnieuw")
+    try:
+        return hashlib.scrypt(password.encode(), salt=salt, n=2**14, r=8, p=1, dklen=32).hex()
+    finally:
+        HASH_SLOTS.release()
 
 
 def password_ok(password: str) -> bool:
@@ -170,7 +185,7 @@ def password_ok(password: str) -> bool:
 # ingelogd; een rol geeft het recht om op één tabblad dingen te doen. "admin" is beheerder van alles, ook van de
 # gebruikers en de tool zelf. Geen enkele rol = alleen lezen. De namen van de rollen zijn die van de tabbladen.
 USERS_FILE = STATE_DIR / "users.json"
-USER_RE = re.compile(r"^[a-z0-9][a-z0-9._-]{1,31}$")
+USER_RE = re.compile(r"^[a-z0-9][a-z0-9._-]{1,31}\Z")
 AREAS = ("overview", "storage", "network", "backups", "events")
 MAX_USERS = 50
 MIN_PASSWORD_DEFAULT, MIN_PASSWORD_RANGE = 12, (8, 128)
@@ -286,11 +301,13 @@ def session_policy() -> dict:
             else min(max(round(SESSION_SECONDS / 3600), SESSION_HOURS_RANGE[0]), SESSION_HOURS_RANGE[1])}
 
 
-def make_token(user: str, remember: bool = False) -> str:
-    """Een ondertekende sessie. Met remember ("Ingelogd blijven") duurt hij dagen in plaats van uren, en staat dat erin."""
+def make_token(user: str, remember: bool = False, since: int | None = None) -> str:
+    """Een ondertekende sessie. Met remember ("Ingelogd blijven") duurt hij dagen in plaats van uren, en staat dat erin.
+    since is wanneer de gebruiker echt inlogde (met wachtwoord, sleutel of SSO); een verlengde sessie houdt die tijd."""
     pol = session_policy()
     life = pol["remember_days"] * 86400 if remember else pol["session_hours"] * 3600
-    data = {"u": user, "e": int(time.time()) + life, "g": (account(user) or {}).get("gen", 0)}
+    data = {"u": user, "e": int(time.time()) + life, "g": (account(user) or {}).get("gen", 0),
+            "t": int(time.time()) if since is None else int(since)}
     if remember:
         data["r"] = 1
     payload = base64.urlsafe_b64encode(json.dumps(data).encode()).decode().rstrip("=")
@@ -306,21 +323,41 @@ def token_remembered(token) -> bool:
         return False
 
 
-def set_session_cookie(response, user: str, remember: bool = False):
+def token_since(token) -> int:
+    """Wanneer de gebruiker van deze (ondertekende) sessie echt inlogde; 0 als dat er niet in staat."""
+    payload, _, signature = (token or "").partition(".")
+    try:
+        if not signature or not hmac.compare_digest(signature.encode(), sign(payload).encode()):
+            return 0
+        since = json.loads(base64.urlsafe_b64decode(payload + "=" * (-len(payload) % 4))).get("t")
+    except (ValueError, TypeError, AttributeError, UnicodeError):
+        return 0
+    return since if isinstance(since, int) and not isinstance(since, bool) else 0
+
+
+def set_session_cookie(response, user: str, remember: bool = False, since: int | None = None):
     """Met Ingelogd blijven (als de beheerder dat toestaat) een cookie dat blijft na het sluiten van de browser; anders
     een sessiecookie dat dan verdwijnt (en de sessie zelf verloopt na session_hours). Lax: het cookie gaat niet mee
     met verzoeken die een andere website namens de gebruiker doet."""
     pol = session_policy()
     remember = bool(remember and pol["remember"])
     extra = {"max_age": pol["remember_days"] * 86400} if remember else {}
-    response.set_cookie(SESSION_COOKIE, make_token(user, remember), path="/", httponly=True, secure=True, samesite="lax", **extra)
+    response.set_cookie(SESSION_COOKIE, make_token(user, remember, since), path="/", httponly=True, secure=True, samesite="lax", **extra)
+
+
+def drop_cookie(response, name: str, path: str = "/"):
+    """Haalt een cookie van de tool weg. Met dezelfde vlaggen als bij het zetten: een __Host-cookie verdwijnt anders niet."""
+    response.delete_cookie(name, path=path, secure=True, httponly=True, samesite="lax")
 
 
 def read_token(token) -> str | None:
     """De gebruiker uit een geldig, niet verlopen sessiecookie; anders None."""
     payload, _, signature = (token or "").partition(".")
-    if not signature or not hmac.compare_digest(signature, sign(payload)):
-        return None
+    try:
+        if not signature or not hmac.compare_digest(signature.encode(), sign(payload).encode()):
+            return None
+    except UnicodeError:
+        return None   # een cookie met tekens die er niet in horen
     try:
         data = json.loads(base64.urlsafe_b64decode(payload + "=" * (-len(payload) % 4)))
     except ValueError:
@@ -366,27 +403,120 @@ manage_overview, manage_storage, manage_network, manage_backups, manage_events =
 manage_create = need("overview", "storage")   # de keuzelijsten voor aanmaken dienen beide tabbladen
 
 
-class LoginGuard:
-    """Rem op raden: na 5 mislukte pogingen vanaf één adres (of 20 in totaal) binnen 10 minuten is inloggen dicht."""
+TOO_MANY = "Te veel mislukte pogingen. Probeer het over tien minuten opnieuw."
+TOO_MANY_NAME = ("Voor deze gebruiker is te vaak een verkeerd wachtwoord geprobeerd. Probeer het over tien minuten opnieuw, "
+                 "of log in vanaf een adres waarvandaan je eerder bent ingelogd.")
 
-    WINDOW, PER_SOURCE, TOTAL = 600, 5, 20
+
+class LoginGuard:
+    """Rem op het raden van wachtwoorden (ook die van Proxmox-accounts via de tool).
+
+    Elke mislukte poging telt, over de laatste tien minuten, op drie tellers:
+      - deze naam vanaf dit adres: na 5 fouten is die combinatie dicht;
+      - dit adres, welke naam ook: na 20 fouten is dat adres dicht;
+      - deze naam, vanaf welk adres ook: na 10 fouten is die naam dicht voor adressen waarvandaan nog niemand met die
+        naam is ingelogd. Zo raadt niemand een wachtwoord vanaf steeds een ander adres, terwijl de gebruiker zelf vanaf
+        een vertrouwd adres gewoon binnenkomt.
+    Er is geen blokkade voor iedereen tegelijk meer. Een geslaagde inlog wist alleen de teller van zijn eigen naam en
+    adres. Een poging telt al als mislukt vóórdat het wachtwoord wordt gecontroleerd (onder het slot), zodat veel
+    pogingen tegelijk niet allemaal doorkomen; ok() of undo() haalt hem weer weg. Zonder naam (een beveiligingssleutel)
+    telt alleen het adres."""
+
+    WINDOW, PAIR, ADDRESS, NAME = 600, 5, 20, 10
+    KNOWN_DAYS, MAX_KEYS = 30, 20000
 
     def __init__(self):
-        self.failures = []  # (tijdstip, afzender)
         self.lock = threading.Lock()
+        self.reset()
 
-    def blocked(self, source: str) -> bool:
+    def reset(self):
         with self.lock:
-            self.failures = [f for f in self.failures if f[0] > time.time() - self.WINDOW]
-            return len(self.failures) >= self.TOTAL or sum(1 for f in self.failures if f[1] == source) >= self.PER_SOURCE
+            self.fails = {}   # ("p", adres, naam) / ("a", adres) / ("n", naam) -> tijdstippen van mislukte pogingen
+            self.known = {}   # (naam, adres) -> tijdstip van de laatste geslaagde inlog
 
-    def failed(self, source: str):
-        with self.lock:
-            self.failures.append((time.time(), source))
+    def _recent(self, key, now) -> list:
+        times = [t for t in self.fails.get(key, ()) if t > now - self.WINDOW]
+        if times:
+            self.fails[key] = times
+        else:
+            self.fails.pop(key, None)
+        return times
 
-    def succeeded(self, source: str):
+    def _tidy(self, now):
+        """Houdt het geheugen klein: oude tellers weg; zijn het er dan nog te veel, eerst die met de minste fouten."""
+        if len(self.fails) > self.MAX_KEYS:
+            for key in list(self.fails):
+                self._recent(key, now)
+            if len(self.fails) > self.MAX_KEYS:
+                for key in sorted(self.fails, key=lambda k: (len(self.fails[k]), self.fails[k][-1]))[:len(self.fails) - self.MAX_KEYS * 3 // 4]:
+                    del self.fails[key]
+        if len(self.known) > self.MAX_KEYS:
+            for key in sorted(self.known, key=self.known.get)[:len(self.known) - self.MAX_KEYS * 3 // 4]:
+                del self.known[key]
+
+    def attempt(self, source: str, name: str | None = None) -> tuple:
+        """Mag er nu een poging komen? Zo nee: 429. Zo ja: de poging telt meteen als mislukt (zie ok en undo)."""
+        now, name = time.time(), (name or "").strip().lower()[:100] or None
         with self.lock:
-            self.failures = [f for f in self.failures if f[1] != source]
+            self._tidy(now)
+            if len(self._recent(("a", source), now)) >= self.ADDRESS:
+                raise HTTPException(429, TOO_MANY)
+            if name and len(self._recent(("p", source, name), now)) >= self.PAIR:
+                raise HTTPException(429, TOO_MANY)
+            if name and len(self._recent(("n", name), now)) >= self.NAME and not self._trusted(source, name, now):
+                raise HTTPException(429, TOO_MANY_NAME)
+            for key in self._keys(source, name):
+                self.fails.setdefault(key, []).append(now)
+        return (source, name, now)
+
+    def _keys(self, source, name) -> list:
+        return [("a", source)] + ([("p", source, name), ("n", name)] if name else [])
+
+    def _trusted(self, source, name, now) -> bool:
+        return self.known.get((name, source), 0) > now - self.KNOWN_DAYS * 86400
+
+    def _drop(self, ticket):
+        source, name, at = ticket
+        for key in self._keys(source, name):
+            times = self.fails.get(key)
+            if times and at in times:
+                times.remove(at)
+                if not times:
+                    del self.fails[key]
+
+    def undo(self, ticket):
+        """Er is niets gecontroleerd (bijvoorbeeld: Proxmox was niet bereikbaar); de poging telt niet."""
+        with self.lock:
+            self._drop(ticket)
+
+    def ok(self, ticket):
+        """Het geheim klopte: de poging telt niet, de fouten van deze naam vanaf dit adres vervallen en dit adres is
+        voortaan vertrouwd voor deze naam."""
+        source, name, _ = ticket
+        with self.lock:
+            self._drop(ticket)
+            if name:
+                self.fails.pop(("p", source, name), None)
+                self.known[(name, source)] = time.time()
+
+    def trust(self, source: str, name: str):
+        """Een geslaagde inlog zonder wachtwoord (SSO, sleutel): dit adres is voortaan vertrouwd voor deze naam."""
+        if name:
+            with self.lock:
+                self.known[(name.strip().lower()[:100], source)] = time.time()
+
+    def check(self, source: str, name: str | None, test) -> bool:
+        """Eén poging: test() controleert het geheim en geeft True of False. Loopt test() vast op iets anders dan een
+        fout geheim (de tool is te druk), dan telt de poging niet."""
+        ticket = self.attempt(source, name)
+        try:
+            good = bool(test())
+        except BaseException:
+            self.undo(ticket)
+            raise
+        if good:
+            self.ok(ticket)
+        return good
 
 
 login_guard = LoginGuard()
@@ -678,7 +808,30 @@ except OSError:
     VERSION = "?"
 
 
-def page(file: Path, user: str = "", request=None) -> str:
+INLINE_SCRIPT_RE = re.compile(r"<script>(.*?)</script>", re.S)
+HOST_HEADER_RE = re.compile(r"[A-Za-z0-9.\-]{1,253}(:\d{1,5})?|\[[0-9A-Fa-f:.]{2,45}\](:\d{1,5})?")
+
+
+def page_csp(text: str, request) -> str:
+    """De Content-Security-Policy van een pagina van de tool. Scripts: alleen de vaste scripts in de pagina zelf (met hun
+    vingerafdruk) en die van de tool (xterm). Geen plug-ins, geen andere <base>, verbindingen alleen met de tool zelf, en
+    geen andere site die de pagina in een frame zet. Mocht er ooit toch een stukje vreemde opmaak in de pagina belanden,
+    dan kan dat zo geen script uitvoeren of gegevens wegsturen."""
+    hashes = " ".join("'sha256-" + base64.b64encode(hashlib.sha256(code.replace("\r\n", "\n").encode()).digest()).decode() + "'"
+                      for code in INLINE_SCRIPT_RE.findall(text))
+    host = (request.headers.get("host") or "") if request is not None else ""
+    sockets = f" wss://{host}" if HOST_HEADER_RE.fullmatch(host) else ""   # de console (oudere Safari telt wss niet als 'self')
+    return (f"default-src 'self'; script-src 'self' {hashes}; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; "
+            f"font-src 'self' data:; connect-src 'self'{sockets}; frame-src 'self'; object-src 'none'; base-uri 'none'; "
+            "form-action 'self'; frame-ancestors 'none'")
+
+
+def page(file: Path, user: str = "", request=None) -> HTMLResponse:
+    text = page_text(file, user, request)
+    return HTMLResponse(text, headers={"Content-Security-Policy": page_csp(text, request), "Cache-Control": "no-store"})
+
+
+def page_text(file: Path, user: str = "", request=None) -> str:
     who = (account(user) or {}) if user else {}
     why = view_only(request) if user else None
     choice = request.cookies.get(VIEW_COOKIE) if request is not None and via_cloudflare(request) else None
@@ -1426,6 +1579,35 @@ MESSAGES = {
          'Die Suche nach neuen Versionen ist ausgeschaltet (UPDATE_REPO in maintool.env)'),
     'Deze versie staat niet (meer) op GitHub; kijk opnieuw':
         ('This version is not (or no longer) on GitHub; check again', 'Diese Version ist nicht (mehr) auf GitHub; sieh noch einmal nach'),
+    'De tool is even te druk om het wachtwoord te controleren; probeer het zo opnieuw':
+        ('The tool is too busy to check the password right now; try again in a moment',
+         'Das Tool ist gerade zu beschäftigt, um das Passwort zu prüfen; versuche es gleich noch einmal'),
+    'Voor deze gebruiker is te vaak een verkeerd wachtwoord geprobeerd. Probeer het over tien minuten opnieuw, of log in vanaf een adres waarvandaan je eerder bent ingelogd.':
+        ('A wrong password has been tried too often for this user. Try again in ten minutes, or log in from an address you have logged in from before.',
+         'Für diesen Benutzer wurde zu oft ein falsches Passwort versucht. Versuche es in zehn Minuten erneut, oder melde dich von einer Adresse an, von der aus du dich schon einmal angemeldet hast.'),
+    'Dit verzoek is te groot': ('This request is too large', 'Diese Anfrage ist zu groß'),
+    'Log eerst opnieuw in (via SSO of met een sleutel); daarna kun je vijf minuten lang je sleutels wijzigen':
+        ('Log in again first (via SSO or with a key); after that you can change your keys for five minutes',
+         'Melde dich zuerst erneut an (über SSO oder mit einem Schlüssel); danach kannst du fünf Minuten lang deine Schlüssel ändern'),
+    'De naam {0} is niet te vinden': ('The name {0} cannot be found', 'Der Name {0} ist nicht zu finden'),
+    'Alleen een beheerder kan een ISO laten downloaden van een adres in het eigen netwerk':
+        ('Only an administrator can have an ISO downloaded from an address in your own network',
+         'Nur ein Administrator kann eine ISO von einer Adresse im eigenen Netzwerk herunterladen lassen'),
+    'Er loopt al een update via node {0}; wacht tot die klaar is':
+        ('An update through node {0} is already running; wait until it has finished',
+         'Über Node {0} läuft bereits ein Update; warte, bis es fertig ist'),
+    'Er staat geen gecontroleerd bestand klaar dat via de node kan; haal de versie opnieuw op':
+        ('There is no checked file ready that can go through the node; fetch the version again',
+         'Es liegt keine geprüfte Datei bereit, die über den Node gehen kann; hole die Version erneut'),
+    'Log eerst in op de console van node {0} als root@pam':
+        ('First log in to the console of node {0} as root@pam', 'Melde dich zuerst an der Konsole von Node {0} als root@pam an'),
+    'De opdracht voor de node kon niet worden gemaakt':
+        ('The command for the node could not be made', 'Der Befehl für den Node konnte nicht erstellt werden'),
+    'Het starten op node {0} is mislukt: {1}': ('Starting on node {0} failed: {1}', 'Das Starten auf Node {0} ist fehlgeschlagen: {1}'),
+    'Node {0} gaf niet op tijd antwoord; kijk op die node of het setup-bestand loopt (systemctl status maintool-update-{1})':
+        ('Node {0} did not answer in time; check on that node whether the setup file is running (systemctl status maintool-update-{1})',
+         'Node {0} hat nicht rechtzeitig geantwortet; sieh auf diesem Node nach, ob die Setup-Datei läuft (systemctl status maintool-update-{1})'),
+    'Proxmox weigert de console': ('Proxmox refuses the console', 'Proxmox verweigert die Konsole'),
 }
 _PATTERNS = [(re.compile("^" + re.escape(nl).replace(r"\{0\}", "(.*?)").replace(r"\{1\}", "(.*?)") + "$", re.S), en, de)
              for nl, (en, de) in MESSAGES.items()]
@@ -1453,11 +1635,98 @@ async def translated_error(request: Request, err: HTTPException):
                         headers=getattr(err, "headers", None))
 
 
+def origin_ok(headers) -> bool:
+    """Komt dit verzoek van de pagina van de tool zelf? Dan zet de browser Origin op het adres van de tool."""
+    origin = headers.get("origin")
+    try:
+        return bool(origin) and urllib.parse.urlsplit(origin).netloc == headers.get("host")
+    except ValueError:
+        return False
+
+
 def same_origin(request: Request):
-    """Een ingrijpend verzoek moet van de pagina van de tool zelf komen: een extra slot naast het SameSite-cookie."""
-    origin = request.headers.get("origin")
-    if not origin or urllib.parse.urlsplit(origin).netloc != request.headers.get("host"):
+    """Een ingrijpend verzoek moet van de pagina van de tool zelf komen: een extra slot naast het SameSite-cookie. Gate
+    (hieronder) doet dit al voor elk wijzigend verzoek; de routes die het zelf ook vragen, blijven dat doen."""
+    if not origin_ok(request.headers):
         raise HTTPException(403, "Dit verzoek komt niet van de pagina van de tool")
+
+
+@app.exception_handler(RequestValidationError)
+async def validation_error(request: Request, err: RequestValidationError):
+    """Zoals FastAPI het zelf doet, maar zonder de ingestuurde waarde terug te sturen: die kan groot of geheim zijn."""
+    detail = [{k: e[k] for k in ("type", "loc", "msg") if k in e} for e in err.errors()]
+    return JSONResponse({"detail": detail}, status_code=422)
+
+
+# ---------------------------------------------------------------- de poort voor elk verzoek
+BODY_LIMIT = 64 * 1024                     # zo veel mag een verzoek hooguit meesturen; een formulier van de tool is veel kleiner
+BIG_BODIES = ("/api/selfupdate/upload",)   # het setup-bestand: een eigen grens, en het wordt in stukken gelezen
+SECURITY_HEADERS = {
+    "X-Content-Type-Options": "nosniff",
+    "X-Frame-Options": "DENY",
+    "Referrer-Policy": "same-origin",
+    "Cross-Origin-Opener-Policy": "same-origin",
+    # voor alles wat geen pagina is (de pagina's krijgen hun eigen, zie page_csp)
+    "Content-Security-Policy": "default-src 'none'; frame-ancestors 'none'; base-uri 'none'; form-action 'none'",
+}
+
+
+class Gate:
+    """Eén poort voor elk HTTP-verzoek, vóór de rest van de tool:
+      - een wijzigend verzoek (alles behalve GET en HEAD) op /api/ moet van de pagina van de tool zelf komen (zie
+        origin_ok). Een andere site, ook een onder hetzelfde domein, komt er zo niet door;
+      - een verzoek mag hooguit 64 KB meesturen. FastAPI leest een verzoek helemaal in vóór de controle of iemand is
+        ingelogd; zonder deze grens kon iedereen het geheugen van de tool vol laten lopen;
+      - elk antwoord krijgt beveiligingsheaders mee, en wat van /api/ komt mag de browser niet bewaren."""
+
+    def __init__(self, app):
+        self.app = app
+
+    async def __call__(self, scope, receive, send):
+        if scope["type"] != "http":
+            await self.app(scope, receive, send)
+            return
+        headers = Headers(scope=scope)
+        path, method = scope.get("path") or "", scope.get("method") or "GET"
+        api, problem = path.startswith("/api/"), None
+        if api and method not in ("GET", "HEAD") and not origin_ok(headers):
+            problem = (403, "Dit verzoek komt niet van de pagina van de tool")
+        elif path not in BIG_BODIES:
+            size = headers.get("content-length")
+            if size is not None and (not size.isdigit() or int(size) > BODY_LIMIT):
+                problem = (413, "Dit verzoek is te groot")
+
+        async def send_safe(message):
+            if message["type"] == "http.response.start":
+                out = MutableHeaders(scope=message)
+                for key, value in SECURITY_HEADERS.items():
+                    out.setdefault(key, value)
+                if api:
+                    out.setdefault("Cache-Control", "no-store")
+            await send(message)
+
+        if problem:
+            lang = Request(scope).cookies.get(LANG_COOKIE, "")
+            response = JSONResponse({"detail": translate(problem[1], lang if lang in LANGS else "nl")}, status_code=problem[0])
+            await response(scope, receive, send_safe)
+            return
+        if path in BIG_BODIES:
+            await self.app(scope, receive, send_safe)
+            return
+        seen = 0
+
+        async def receive_limited():   # ook als de browser geen lengte meestuurt (chunked): tellen wat er binnenkomt
+            nonlocal seen
+            message = await receive()
+            if message["type"] == "http.request":
+                seen += len(message.get("body") or b"")
+                if seen > BODY_LIMIT:
+                    raise HTTPException(413, "Dit verzoek is te groot")
+            return message
+        await self.app(scope, receive_limited, send_safe)
+
+
+app.add_middleware(Gate)
 
 
 @app.get("/", response_class=HTMLResponse)
@@ -1469,7 +1738,7 @@ def index(request: Request):
     name = None if request.cookies.get(NOSSO_COOKIE) else cloudflare_user(request)
     if not name:
         return RedirectResponse("/login", status_code=303)
-    response = HTMLResponse(page(INDEX, name, request))
+    response = page(INDEX, name, request)
     start_session(response, name)
     return response
 
@@ -1483,7 +1752,7 @@ def login_page(request: Request):
         response = RedirectResponse("/", status_code=303)
         start_session(response, name)
         return response
-    return page(LOGIN)
+    return page(LOGIN, request=request)
 
 
 class LoginIn(BaseModel):
@@ -1497,20 +1766,16 @@ class LoginIn(BaseModel):
 @app.post("/api/login")
 def login(body: LoginIn, request: Request, response: Response):
     source = source_of(request)
-    if login_guard.blocked(source):
-        raise HTTPException(429, "Te veel mislukte pogingen. Probeer het over tien minuten opnieuw.")
     if body.method == "proxmox":
         name = proxmox_login(body, source)
     else:
         name = body.username.strip()
         if not secrets.compare_digest(name.encode(), APP_USER.encode()):
             name = name.lower()   # de namen van de overige gebruikers zijn in kleine letters
-        if not check_login(name, body.password):
-            login_guard.failed(source)
+        if not login_guard.check(source, name, lambda: check_login(name, body.password)):
             raise HTTPException(401, "Gebruikersnaam of wachtwoord klopt niet")
     if wa_required(name):   # de beveiligingssleutel is voor deze gebruiker verplicht: nog geen sessie
         return wa_second_step(request, name, body.remember)
-    login_guard.succeeded(source)
     start_session(response, name, body.remember)
     return {"ok": True}
 
@@ -1519,7 +1784,8 @@ def login(body: LoginIn, request: Request, response: Response):
 def logout(request: Request, response: Response):
     with nodecon_lock:
         _nodecon.pop(nodecon_key(request), None)
-    response.delete_cookie(SESSION_COOKIE, path="/")
+    drop_cookie(response, SESSION_COOKIE)
+    response.delete_cookie(OLD_SESSION_COOKIE, path="/")
     # Na uitloggen niet vanzelf weer binnen via Cloudflare Access; dat kan dan met de knop op de inlogpagina.
     response.set_cookie(NOSSO_COOKIE, "1", path="/", httponly=True, secure=True, samesite="lax")
     return {"ok": True}
@@ -1546,11 +1812,7 @@ def change_password(body: PasswordIn, request: Request, response: Response, user
     """Wijzigt het eigen wachtwoord. Het nieuwe wordt alleen als hash bewaard; alle andere sessies van deze
     gebruiker vervallen."""
     same_origin(request)
-    source = request.client.host if request.client else "?"
-    if login_guard.blocked(source):
-        raise HTTPException(429, "Te veel mislukte pogingen. Probeer het over tien minuten opnieuw.")
-    if not check_login(user, body.current):
-        login_guard.failed(source)
+    if not login_guard.check(source_of(request), user, lambda: check_login(user, body.current)):
         raise HTTPException(403, "Het huidige wachtwoord klopt niet; er is niets gewijzigd")
     problem = new_password_problem(body.new)
     if problem:
@@ -1762,12 +2024,14 @@ def users_change(name: str, body: UserChange, request: Request, response: Respon
             salt = secrets.token_bytes(16)
             changed.update(salt=salt.hex(), hash=password_hash(body.password, salt))
             end = True
+        links_gone = False
         if body.sso is not None:
             old = dict(changed.get("sso") or {})
             links = links_in(body.sso, name)
             if old.get("oidc_sub") and links.get("oidc") == old.get("oidc"):
                 links["oidc_sub"] = old["oidc_sub"]
-            end = end or any(old.get(m) and old.get(m) != links.get(m) for m in SSO_METHODS)
+            links_gone = any(old.get(m) and old.get(m) != links.get(m) for m in SSO_METHODS)
+            end = end or links_gone
             changed["sso"] = links
         if body.password_login is not None and body.password_login != changed["pw"]:
             if body.password_login and body.password is None:
@@ -1783,8 +2047,16 @@ def users_change(name: str, body: UserChange, request: Request, response: Respon
             save_users(everyone)
         except OSError:
             raise HTTPException(500, "De gebruikers konden niet bewaard worden")
-    if end and name == actor:
-        start_session(response, name, token_remembered(request.cookies.get(SESSION_COOKIE)))   # wie zijn eigen koppelingen wijzigt blijft in deze browser ingelogd
+    # Logt deze gebruiker alleen via SSO in en is een koppeling weggehaald of veranderd, dan gaan ook zijn
+    # beveiligingssleutels weg: anders kwam hij met een eerder toegevoegde sleutel gewoon nog binnen.
+    if links_gone and not changed["pw"] and wa_user(name)["keys"]:
+        try:
+            wa_forget(name)
+        except OSError:
+            raise HTTPException(500, "De sleutels konden niet bewaard worden")
+        state.event("webauthn", "beveiligingssleutels van een gebruiker weggehaald", target="", name=name, user=actor)
+    if end and name == actor:   # wie zijn eigen koppelingen wijzigt blijft in deze browser ingelogd
+        start_session(response, name, token_remembered(request.cookies.get(SESSION_COOKIE)), token_since(request.cookies.get(SESSION_COOKIE)))
     return user_list()
 
 
@@ -1824,15 +2096,15 @@ def users_delete(name: str, request: Request, actor: str = Depends(admin)):
 SSO_FILE = STATE_DIR / "sso.json"
 SSO_METHODS = ("oidc", "cloudflare", "proxmox")
 OIDC_PROVIDERS = {"microsoft": "Microsoft", "google": "Google", "authentik": "Authentik", "keycloak": "Keycloak", "other": "SSO"}
-PVE_USERID_RE = re.compile(r"^[A-Za-z0-9._-]{1,64}@[A-Za-z0-9][A-Za-z0-9._-]{0,31}$")
-PVE_REALM_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,31}$")
-CF_TEAM_RE = re.compile(r"^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$")
-CF_AUD_RE = re.compile(r"^[0-9a-f]{64}$")
-PUBLIC_URL_RE = re.compile(r"^https://[A-Za-z0-9]([A-Za-z0-9.\-]{0,251}[A-Za-z0-9])?(:\d{1,5})?$")
-OIDC_SECRET_RE = re.compile(r"^[\x21-\x7e]{1,500}$")
-OIDC_ID_RE = re.compile(r"^[\x21-\x7e]{1,200}$")
-SSO_LABEL_RE = re.compile(r"^[^\x00-\x1f\x7f<>\"&]{1,40}$")
-OIDC_COOKIE, NOSSO_COOKIE = "maintool_oidc", "maintool_nosso"
+PVE_USERID_RE = re.compile(r"^[A-Za-z0-9._-]{1,64}@[A-Za-z0-9][A-Za-z0-9._-]{0,31}\Z")
+PVE_REALM_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,31}\Z")
+CF_TEAM_RE = re.compile(r"^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?\Z")
+CF_AUD_RE = re.compile(r"^[0-9a-f]{64}\Z")
+PUBLIC_URL_RE = re.compile(r"^https://[A-Za-z0-9]([A-Za-z0-9.\-]{0,251}[A-Za-z0-9])?(:\d{1,5})?\Z")
+OIDC_SECRET_RE = re.compile(r"^[\x21-\x7e]{1,500}\Z")
+OIDC_ID_RE = re.compile(r"^[\x21-\x7e]{1,200}\Z")
+SSO_LABEL_RE = re.compile(r"^[^\x00-\x1f\x7f<>\"&]{1,40}\Z")
+OIDC_COOKIE, NOSSO_COOKIE = "__Host-maintool_oidc", "__Host-maintool_nosso"   # __Host-: zie SESSION_COOKIE
 _sso = {"stamp": None, "data": {}}
 sso_lock = threading.Lock()
 
@@ -1954,13 +2226,20 @@ def bind_oidc_sub(name: str, key: str) -> bool:
 
 
 def source_of(request) -> str:
-    return request.client.host if request.client else "?"
+    """Het adres waarvan een verzoek komt, voor de rem op inloggen. Via Cloudflare komen alle gebruikers binnen vanaf de
+    machine met cloudflared; Cloudflare zet het echte adres van de gebruiker dan in Cf-Connecting-Ip. Dat telt mee, zodat
+    één gebruiker via Cloudflare niet iedereen afremt die ook via Cloudflare werkt. Wie die kop zelf meestuurt, verdeelt
+    zo alleen zijn eigen pogingen over meer adressen; de teller per naam (zie LoginGuard) geldt dan nog steeds."""
+    host = request.client.host if request.client else "?"
+    real = (request.headers.get("cf-connecting-ip") or "").strip()
+    return f"{host}|{real}" if real and real != host and is_ip(real) else host
 
 
-def start_session(response, name: str, remember: bool = False):
+def start_session(response, name: str, remember: bool = False, since: int | None = None):
     """Geeft deze browser een sessie voor deze gebruiker; met remember (Ingelogd blijven) een die blijft."""
-    set_session_cookie(response, name, remember)
-    response.delete_cookie(NOSSO_COOKIE, path="/")
+    set_session_cookie(response, name, remember, since)
+    drop_cookie(response, NOSSO_COOKIE)
+    response.delete_cookie(OLD_SESSION_COOKIE, path="/")   # het cookie van vóór versie 1.5.2
 
 
 # --- ondertekende tokens (JWT). Alleen controleren, nooit maken; RS256 met de openbare sleutels van de dienst, of
@@ -2124,14 +2403,34 @@ def oidc_exchange(c: dict, d: dict, code: str, verifier: str, nonce: str) -> dic
 
 
 def oidc_email(c: dict, claims: dict) -> str | None:
-    """Het mailadres waarmee de gebruiker wordt opgezocht. Een adres dat de dienst zelf onbevestigd noemt telt niet.
-    Microsoft geeft het adres niet altijd als 'email' mee; dan geldt de inlognaam (UPN) van de eigen tenant."""
-    if str(claims.get("email_verified")).lower() == "false":
+    """Het mailadres waarmee de gebruiker wordt opgezocht. Alleen een adres dat de dienst zelf bevestigd noemt
+    (email_verified) telt; ontbreekt die bevestiging, dan telt het adres niet. Microsoft Entra ID geeft die bevestiging
+    nooit mee: daar geldt het adres zoals de eigen tenant het heeft (de uitgever is altijd die ene tenant), of anders
+    de inlognaam (UPN)."""
+    confirmed = str(claims.get("email_verified")).lower()
+    if confirmed == "false" or (confirmed != "true" and c.get("provider") != "microsoft"):
         return None
     email = claims.get("email")
     if not (isinstance(email, str) and EMAIL_RE.match(email)) and c.get("provider") == "microsoft":
         email = claims.get("preferred_username")
     return email.lower() if isinstance(email, str) and EMAIL_RE.match(email) else None
+
+
+def oidc_user(c: dict, claims: dict) -> tuple:
+    """(gebruiker, None), of (None, foutcode voor de inlogpagina). Eerst telt het account bij de dienst zelf (uitgever en
+    sub): is dat al bij een gebruiker vastgelegd, dan is het die, ook als het mailadres bij de dienst inmiddels anders
+    is. Anders zoekt de tool op een bevestigd mailadres en legt dit account bij die gebruiker vast."""
+    key = f"{claims['iss']}|{claims['sub']}"
+    bound = [n for n in [APP_USER, *sorted(users_state())] if links_of(n).get("oidc_sub") == key]
+    if len(bound) == 1:
+        return bound[0], None
+    email = oidc_email(c, claims)
+    name = find_linked("oidc", email) if email else None
+    if not name:
+        return None, "unknown" if email else "noemail"
+    if not bind_oidc_sub(name, key):
+        return None, "mismatch"
+    return name, None
 
 
 def cf_issuer(team: str) -> str:
@@ -2140,23 +2439,23 @@ def cf_issuer(team: str) -> str:
 
 def cloudflare_user(request) -> str | None:
     """De gekoppelde gebruiker bij het Cloudflare Access-token in dit verzoek; None als er geen geldig token is of
-    niemand aan dat adres is gekoppeld. Een ongeldig token telt als mislukte inlogpoging."""
+    niemand aan dat adres is gekoppeld. Een ongeldig token telt niet als mislukte inlogpoging: zo'n token is niet te
+    raden, en anders kon iedereen met een onzin-token de rem voor anderen dicht laten gaan."""
     if not sso_on("cloudflare"):
         return None
     token = request.headers.get("cf-access-jwt-assertion") or request.cookies.get("CF_Authorization")
     if not token:
-        return None
-    source = source_of(request)
-    if login_guard.blocked(source):
         return None
     c = sso_conf("cloudflare")
     issuer = cf_issuer(c["team"])
     try:
         claims = verified(token, issuer + "/cdn-cgi/access/certs", None, issuer, c["aud"])
     except (JWTError, SSOError):
-        login_guard.failed(source)
         return None
-    return find_linked("cloudflare", claims.get("email")) if isinstance(claims.get("email"), str) else None
+    name = find_linked("cloudflare", claims.get("email")) if isinstance(claims.get("email"), str) else None
+    if name:
+        login_guard.trust(source_of(request), name)
+    return name
 
 
 def pve_ticket(userid: str, password: str, **extra) -> dict | None:
@@ -2194,20 +2493,24 @@ def proxmox_login(body, source: str) -> str:
         raise HTTPException(400, "Inloggen met een Proxmox-account staat uit")
     realm, user = (body.realm or "").strip(), body.username.strip()
     userid = f"{user}@{realm}"
+    ticket = login_guard.attempt(source, "pve:" + userid)   # dezelfde teller als bij de console van een node
     name = find_linked("proxmox", userid) if realm in sso_realms() and PVE_USERID_RE.match(userid) else None
     if not name or not body.password:
-        login_guard.failed(source)
         time.sleep(0.2 + secrets.randbelow(300) / 1000)   # ongeveer zo lang als een echte controle bij Proxmox duurt
         raise HTTPException(401, "Gebruikersnaam of wachtwoord klopt niet")
-    data = pve_ticket(userid, body.password)
+    try:
+        data = pve_ticket(userid, body.password)
+    except HTTPException:
+        login_guard.undo(ticket)   # Proxmox was niet bereikbaar: er is niets gecontroleerd
+        raise
     if data is None:
-        login_guard.failed(source)
         raise HTTPException(401, "Gebruikersnaam of wachtwoord klopt niet")
     if data.get("NeedTFA"):
+        login_guard.undo(ticket)
         raise HTTPException(401, "Dit Proxmox-account gebruikt tweestapsverificatie; daarmee kan de tool nog niet inloggen")
     if find_linked("proxmox", str(data.get("username") or "")) != name:
-        login_guard.failed(source)
         raise HTTPException(401, "Gebruikersnaam of wachtwoord klopt niet")
+    login_guard.ok(ticket)
     return name
 
 
@@ -2252,7 +2555,7 @@ def oidc_start(request: Request, then: str = "", remember: int = 0):
         "state": st["s"], "nonce": st["n"], "code_challenge_method": "S256",
         "code_challenge": base64.urlsafe_b64encode(hashlib.sha256(verifier.encode()).digest()).decode().rstrip("=")})
     response = RedirectResponse(d["authorization_endpoint"] + ("&" if "?" in d["authorization_endpoint"] else "?") + query, status_code=303)
-    response.set_cookie(OIDC_COOKIE, f"{payload}.{sign('oidc:' + payload)}", max_age=600, path="/api/sso/oidc",
+    response.set_cookie(OIDC_COOKIE, f"{payload}.{sign('oidc:' + payload)}", max_age=600, path="/",
                         httponly=True, secure=True, samesite="lax")
     return response
 
@@ -2261,20 +2564,16 @@ def oidc_start(request: Request, then: str = "", remember: int = 0):
 def oidc_callback(request: Request):
     """Hier komt de browser terug van de OpenID-dienst. Bij elke fout gaat hij naar de inlogpagina met een vaste
     foutcode (nooit tekst van buiten)."""
-    q, source = request.query_params, source_of(request)
+    q = request.query_params
 
-    def fail(code: str, count: bool = True):
-        if count:
-            login_guard.failed(source)
+    def fail(code: str):   # geen mislukte inlogpoging: hier valt niets te raden (state, PKCE en een ondertekend id-token)
         response = RedirectResponse(f"/login?sso={code}", status_code=303)
-        response.delete_cookie(OIDC_COOKIE, path="/api/sso/oidc")
+        drop_cookie(response, OIDC_COOKIE)
         return response
-    if login_guard.blocked(source):
-        return fail("blocked", False)
     if not sso_on("oidc"):
-        return fail("off", False)
+        return fail("off")
     if q.get("error"):
-        return fail("denied", False)
+        return fail("denied")
     payload, _, signature = (request.cookies.get(OIDC_COOKIE) or "").partition(".")
     try:
         st = json.loads(b64url(payload)) if signature and hmac.compare_digest(signature, sign("oidc:" + payload)) else None
@@ -2291,15 +2590,12 @@ def oidc_callback(request: Request):
         claims = oidc_exchange(c, oidc_discovery(c["issuer"]), code, str(st.get("v")), str(st.get("n")))
     except SSOError:
         return fail("invalid")
-    email = oidc_email(c, claims)
-    name = find_linked("oidc", email) if email else None
+    name, problem = oidc_user(c, claims)
     if not name:
-        return fail("unknown" if email else "noemail")
-    if not bind_oidc_sub(name, f"{claims['iss']}|{claims['sub']}"):
-        return fail("mismatch")
-    login_guard.succeeded(source)
+        return fail(problem)
+    login_guard.trust(source_of(request), name)
     response = RedirectResponse("/#sxy" if st.get("x") == "sxy" else "/", status_code=303)
-    response.delete_cookie(OIDC_COOKIE, path="/api/sso/oidc")
+    drop_cookie(response, OIDC_COOKIE)
     start_session(response, name, st.get("k") == 1)
     return response
 
@@ -2309,8 +2605,6 @@ def cloudflare_login(request: Request, response: Response, remember: int = 0):
     """De knop "Inloggen met Cloudflare Access" op de inlogpagina (na uitloggen gaat dat niet meer vanzelf)."""
     if not sso_on("cloudflare"):
         raise HTTPException(400, "Inloggen met Cloudflare Access staat uit")
-    if login_guard.blocked(source_of(request)):
-        raise HTTPException(429, "Te veel mislukte pogingen. Probeer het over tien minuten opnieuw.")
     name = cloudflare_user(request)
     if not name:
         raise HTTPException(401, "Geen geldige inlog van Cloudflare Access gevonden. Open de tool via je Cloudflare-adres; is dat al zo, dan is je account niet aan een gebruiker gekoppeld.")
@@ -2457,7 +2751,7 @@ def sso_proxmox_put(body: ProxmoxSSOIn, request: Request, _: str = Depends(admin
 # Cloudflare binnen (Cloudflare zet dan altijd Cf-Ray), dan vraagt de pagina of je alleen wilt kijken; de beheerder
 # kan ook instellen dat het daar altijd alleen kijken is. Wie alleen kijkt kan niets veranderen: de bewakers weigeren
 # het, net als bij een gebruiker zonder rollen. In het eigen netwerk (zonder Cloudflare) geldt het niet.
-VIEW_COOKIE = "maintool_viewonly"
+VIEW_COOKIE = "__Host-maintool_viewonly"   # __Host-: zie SESSION_COOKIE
 CF_MODES = ("ask", "readonly", "off")
 VIEW_MSG = {"policy": "Via Cloudflare kun je de tool alleen bekijken; wijzigen doe je via het adres in je eigen netwerk",
             "chosen": "Je bekijkt de tool nu alleen; kies bovenaan Volledig gebruiken om iets te wijzigen"}
@@ -2536,7 +2830,7 @@ def overview(_: str = Depends(auth)):
 
 
 TAG_STYLE = {"at": -1e9, "map": {}}
-HEX6_RE = re.compile(r"^[0-9A-Fa-f]{6}$")
+HEX6_RE = re.compile(r"^[0-9A-Fa-f]{6}\Z")
 
 
 def tag_colors(api) -> dict:
@@ -2616,9 +2910,9 @@ def parse_options(text) -> dict:
     return out
 
 
-NET_RE = re.compile(r"^net\d+$")
-LXC_DISK_RE = re.compile(r"^(rootfs|mp\d+)$")
-VM_DISK_RE = re.compile(r"^(scsi|virtio|sata|ide|efidisk|tpmstate)\d+$")
+NET_RE = re.compile(r"^net\d+\Z")
+LXC_DISK_RE = re.compile(r"^(rootfs|mp\d+)\Z")
+VM_DISK_RE = re.compile(r"^(scsi|virtio|sata|ide|efidisk|tpmstate)\d+\Z")
 NIC_MODELS = ("virtio", "e1000", "e1000e", "rtl8139", "vmxnet3")
 
 
@@ -2767,7 +3061,7 @@ def migrate(node: str, kind: str, vmid: int, body: MigrateIn, _: str = Depends(m
 # Een guest in HA wordt door Proxmox bewaakt: valt zijn node uit, dan start HA hem op een andere node, en loopt hij
 # vast, dan herstart HA hem. Hier zie je hoe HA ervoor staat, en zet je guests in HA, pas je hun instellingen aan of
 # haal je ze eruit. Regels (Proxmox 9) en groepen (Proxmox 8) worden alleen getoond; die stel je in Proxmox zelf in.
-HA_SID_RE = re.compile(r"^(vm|ct):([1-9][0-9]{2,8})$")
+HA_SID_RE = re.compile(r"^(vm|ct):([1-9][0-9]{2,8})\Z")
 HA_STATES = ("started", "stopped", "disabled", "ignored")
 HA_MAX = 10   # zo vaak mag HA hoogstens herstarten of verhuizen (max_restart, max_relocate)
 HA_KIND = {"vm": "qemu", "ct": "lxc"}
@@ -3034,11 +3328,11 @@ def ha_remove(sid: str, request: Request, user: str = Depends(manage_overview)):
 # gebruiker waarmee de tool zelf werkt (PVE_USER) en gebruikers met een naam die de tool niet kent. En een wijziging
 # waarna niemand meer volledige beheerrechten heeft (Administrator op /), behalve de tool zelf, wordt geweigerd: dan
 # kom je zelf niet meer in Proxmox. Wachtwoorden gaan alleen door naar Proxmox; de tool bewaart en logt ze niet.
-PVE_GROUPID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$")
+PVE_GROUPID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}\Z")
 ACL_PATH_RE = re.compile(r"^/(|vms(/[1-9][0-9]{2,8})?|storage(/[A-Za-z][A-Za-z0-9._-]{0,63})?|nodes(/[A-Za-z0-9][A-Za-z0-9-]{0,62})?"
                          r"|pool/[A-Za-z0-9._-]{1,64}|sdn(/zones(/[A-Za-z0-9]{1,8}(/[A-Za-z0-9]{1,8})?)?)?|access(/groups(/[A-Za-z0-9._-]{1,64})?)?"
-                         r"|mapping(/(pci|usb|dir)(/[A-Za-z0-9._-]{1,64})?)?)$")
-ROLE_RE = re.compile(r"^[A-Za-z0-9._-]{1,64}$")
+                         r"|mapping(/(pci|usb|dir)(/[A-Za-z0-9._-]{1,64})?)?)\Z")
+ROLE_RE = re.compile(r"^[A-Za-z0-9._-]{1,64}\Z")
 FULL_ADMIN = "Administrator"
 EXPIRE_RANGE = (946684800, 4102444800)   # 2000 tot 2100, in seconden; 0 = verloopt nooit
 
@@ -3530,10 +3824,10 @@ def access_acl(body: AclIn, request: Request, user: str = Depends(admin)):
 # Wat Proxmox per node laat instellen: een notitie, de tijdzone, DNS, Wake-on-LAN, hoe lang de node wacht voordat hij
 # de guests start, en de pakketbronnen (aan/uit, een standaardbron erbij). De naam en het netwerk van een node horen
 # hier niet: die wijzigt de tool niet (het netwerk staat op het tabblad Netwerken).
-TZ_RE = re.compile(r"^(UTC|[A-Za-z]+(/[A-Za-z0-9_+\-]+){1,2})$")
-MAC_RE = re.compile(r"^[0-9A-Fa-f]{2}(:[0-9A-Fa-f]{2}){5}$")
-DOMAIN_RE = re.compile(r"^(?=.{1,253}$)[A-Za-z0-9]([A-Za-z0-9-]{0,61}[A-Za-z0-9])?(\.[A-Za-z0-9]([A-Za-z0-9-]{0,61}[A-Za-z0-9])?)*$")
-REPO_PATH_RE = re.compile(r"^/etc/apt/(sources\.list|sources\.list\.d/[A-Za-z0-9._-]{1,100})$")
+TZ_RE = re.compile(r"^(UTC|[A-Za-z]+(/[A-Za-z0-9_+\-]+){1,2})\Z")
+MAC_RE = re.compile(r"^[0-9A-Fa-f]{2}(:[0-9A-Fa-f]{2}){5}\Z")
+DOMAIN_RE = re.compile(r"^(?=.{1,253}\Z)[A-Za-z0-9]([A-Za-z0-9-]{0,61}[A-Za-z0-9])?(\.[A-Za-z0-9]([A-Za-z0-9-]{0,61}[A-Za-z0-9])?)*\Z")
+REPO_PATH_RE = re.compile(r"^/etc/apt/(sources\.list|sources\.list\.d/[A-Za-z0-9._-]{1,100})\Z")
 STARTALL_MAX = 300   # seconden, zoals Proxmox toestaat
 
 
@@ -3837,8 +4131,8 @@ def backup_log(days: int = 30, _: str = Depends(auth)):
 # node anders). Erbij: een ISO laten downloaden door Proxmox zelf (download-url), een sjabloon uit de lijst van
 # Proxmox ophalen, en een ISO of sjabloon verwijderen (een ISO alleen als geen VM hem in de cd-speler heeft).
 MEDIA = ("iso", "vztmpl")
-VOLID_MEDIA_RE = re.compile(r"^([A-Za-z][A-Za-z0-9._-]{0,63}):(iso|vztmpl)/([A-Za-z0-9][A-Za-z0-9._+-]{0,250})$")
-ISO_NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._+-]{0,190}\.(iso|img)$")
+VOLID_MEDIA_RE = re.compile(r"^([A-Za-z][A-Za-z0-9._-]{0,63}):(iso|vztmpl)/([A-Za-z0-9][A-Za-z0-9._+-]{0,250})\Z")
+ISO_NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._+-]{0,190}\.(iso|img)\Z")
 CHECKSUMS = {"md5": 32, "sha1": 40, "sha224": 56, "sha256": 64, "sha384": 96, "sha512": 128}
 FREE_IDS = 10   # zoveel vrije ID's biedt het formulier voor een nieuwe guest aan
 
@@ -3949,15 +4243,52 @@ def media_target(api, node: str, storage: str, kind: str) -> dict:
     return st
 
 
+def public_host(host: str) -> bool | None:
+    """Wijst deze naam (of dit IP-adres) alleen naar adressen op internet? False als er ook maar één adres in het eigen
+    netwerk bij zit (privé, loopback, link-local, multicast, CGNAT, gereserveerd en dergelijke, ook verpakt in IPv6); None als de naam
+    niet te vinden is."""
+    try:
+        found = {info[4][0] for info in socket.getaddrinfo(host, None, proto=socket.IPPROTO_TCP)}
+    except (OSError, UnicodeError, ValueError):
+        return None
+    if not found:
+        return None
+    for text in found:
+        try:
+            ip = ipaddress.ip_address(text.split("%")[0])
+        except ValueError:
+            return False
+        inner = [ip]
+        if ip.version == 6:
+            inner += [x for x in (ip.ipv4_mapped, ip.sixtofour, *(ip.teredo or ())) if x]
+            if ip in ipaddress.ip_network("64:ff9b::/96"):   # NAT64: het IPv4-adres zit in de laatste 32 bits
+                inner.append(ipaddress.ip_address(int(ip) & 0xFFFFFFFF))
+        # gereserveerd vangt ook de oude IPv6-vormen met een IPv4-adres erin (::7f00:1 is 127.0.0.1)
+        if any(not x.is_global or x.is_multicast or x.is_reserved or (x.version == 6 and x.is_site_local) for x in inner):
+            return False
+    return True
+
+
 @app.post("/api/library/iso")
 def library_iso(body: IsoDownloadIn, request: Request, user: str = Depends(manage_storage)):
     """Laat Proxmox een ISO downloaden van een webadres naar een opslag. Proxmox haalt hem zelf op: de tool en de
-    browser doen niets met het bestand. Met een controlesom controleert Proxmox het bestand na het downloaden."""
+    browser doen niets met het bestand. Met een controlesom controleert Proxmox het bestand na het downloaden.
+
+    Een adres in het eigen netwerk mag alleen een beheerder opgeven. Anders kon iemand met alleen de rol Opslag de nodes
+    andere apparaten in het netwerk laten opvragen (zoals de router of beheerpagina's); het takenlogboek, dat iedereen
+    leest, laat dan zien wat daar antwoordt. Een openbaar adres dat zelf doorstuurt naar het eigen netwerk houdt dit niet
+    tegen: Proxmox volgt doorverwijzingen."""
     same_origin(request)
     url = body.url.strip()
     parts = urllib.parse.urlsplit(url)
     if parts.scheme not in ("http", "https") or not parts.hostname or any(c.isspace() for c in url):
         raise HTTPException(400, "Vul een webadres in dat begint met http:// of https://")
+    if not (account(user) or {}).get("admin"):
+        public = public_host(parts.hostname)
+        if public is None:
+            raise HTTPException(400, "De naam {0} is niet te vinden".format(parts.hostname[:100]))
+        if not public:
+            raise HTTPException(403, "Alleen een beheerder kan een ISO laten downloaden van een adres in het eigen netwerk")
     if not ISO_NAME_RE.match(body.filename):
         raise HTTPException(400, "Bestandsnaam: letters, cijfers, punt, streepje, liggend streepje of plus, eindigend op .iso of .img")
     params = {"url": url, "filename": body.filename, "content": "iso"}
@@ -4096,8 +4427,8 @@ CRS_METHODS = ("bruteforce", "topsis")
 CRS_DEFAULT = {"ha": "basic", "ha-rebalance-on-start": False, "ha-auto-rebalance": False, "ha-auto-rebalance-threshold": 30,
                "ha-auto-rebalance-margin": 10, "ha-auto-rebalance-hold-duration": 3, "ha-auto-rebalance-method": "bruteforce"}
 CRS_AUTO_KEYS = ("ha-auto-rebalance-threshold", "ha-auto-rebalance-margin", "ha-auto-rebalance-hold-duration", "ha-auto-rebalance-method")
-CRS_KEY_RE = re.compile(r"^[a-z][a-z0-9-]{0,63}$")
-CRS_VALUE_RE = re.compile(r"^[A-Za-z0-9._:-]{1,64}$")
+CRS_KEY_RE = re.compile(r"^[a-z][a-z0-9-]{0,63}\Z")
+CRS_VALUE_RE = re.compile(r"^[A-Za-z0-9._:-]{1,64}\Z")
 BAL_HOLD_MAX = 60        # wachtrondes; een ronde van de HA-manager duurt ongeveer 10 seconden
 BAL_DAYS = 7             # zo ver terug staan de verplaatsingen in het overzicht
 BAL_MOVES_MAX = 30
@@ -4479,7 +4810,7 @@ def balance_guest(sid: str, body: BalanceGuestIn, request: Request, user: str = 
 # ---------------------------------------------------------------- HA instellen (steeksleutel op het tabblad HA)
 # Wat HA nodig heeft (gereedheid), de regels (Proxmox 9: voorkeur voor nodes en samen/apart), wat HA doet bij het
 # uitzetten van een node (shutdown_policy), en HA tijdelijk uitschakelen voor clusteronderhoud (disarm/arm, 9.2).
-HA_RULE_RE = re.compile(r"^[A-Za-z][A-Za-z0-9_-]{1,62}$")
+HA_RULE_RE = re.compile(r"^[A-Za-z][A-Za-z0-9_-]{1,62}\Z")
 HA_RULE_TYPES = ("node-affinity", "resource-affinity")
 HA_ARM_MODES = ("freeze", "ignore")
 HA_PRIO_MAX = 1000
@@ -4744,11 +5075,11 @@ def ha_rule_delete(rule: str, request: Request, user: str = Depends(manage_overv
 # Ceph eerst of het veilig is (cmd-safety) of houdt de tool zelf tegen: geen OSD stoppen of verwijderen die Ceph nog
 # nodig heeft, geen laatste monitor of manager weg, geen pool weg waar nog schijven op staan.
 CEPH_FLAGS = ("noout", "noin", "norebalance", "norecover", "nobackfill", "noscrub", "nodeep-scrub")   # pause, noup, nodown niet
-CEPH_POOL_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]{0,62}$")
+CEPH_POOL_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]{0,62}\Z")
 CEPH_APPS = ("rbd", "cephfs", "rgw")
 CEPH_AUTOSCALE = ("on", "warn", "off")
 CEPH_CLASSES = ("", "ssd", "hdd", "nvme")
-CEPH_DEV_RE = re.compile(r"^/dev/[A-Za-z0-9][A-Za-z0-9/_.-]{0,60}$")
+CEPH_DEV_RE = re.compile(r"^/dev/[A-Za-z0-9][A-Za-z0-9/_.-]{0,60}\Z")
 
 
 def ceph_state(api, node: str) -> tuple:
@@ -4873,7 +5204,7 @@ def ceph_safety(api, node: str, service: str, ident: str, action: str) -> dict:
 @app.get("/api/ceph/safety")
 def ceph_safety_get(service: str, ident: str, action: str, _: str = Depends(auth)):
     """Vraagt Ceph of een OSD of monitor nu veilig kan stoppen of weg kan."""
-    if service not in ("osd", "mon") or action not in ("stop", "destroy") or not re.match(r"^[A-Za-z0-9-]{1,63}$", ident):
+    if service not in ("osd", "mon") or action not in ("stop", "destroy") or not re.match(r"^[A-Za-z0-9-]{1,63}\Z", ident):
         raise HTTPException(400, "Ongeldige vraag")
     return pve.run(lambda api: ceph_safety(api, ceph_first(api), service, ident, action))
 
@@ -5210,11 +5541,11 @@ WEBAUTHN_FILE = STATE_DIR / "webauthn.json"
 WEBAUTHN_MAX_KEYS = 10
 WEBAUTHN_TIMEOUT = 120   # seconden om de sleutel aan te raken
 WA_TRANSPORTS = ("usb", "nfc", "ble", "internal", "hybrid", "smart-card")
-KEY_NAME_RE = re.compile(r"^[^\x00-\x1f\x7f<>\"&]{1,40}$")
-CRED_ID_RE = re.compile(r"^[A-Za-z0-9_-]{16,1400}$")
-HANDLE_RE = re.compile(r"^[A-Za-z0-9_-]{16,90}$")
-B64_RE = re.compile(r"^[A-Za-z0-9_-]{2,800}$")
-RP_RE = re.compile(r"^(?=.{1,253}$)[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?(\.[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?)*$")
+KEY_NAME_RE = re.compile(r"^[^\x00-\x1f\x7f<>\"&]{1,40}\Z")
+CRED_ID_RE = re.compile(r"^[A-Za-z0-9_-]{16,1400}\Z")
+HANDLE_RE = re.compile(r"^[A-Za-z0-9_-]{16,90}\Z")
+B64_RE = re.compile(r"^[A-Za-z0-9_-]{2,800}\Z")
+RP_RE = re.compile(r"^(?=.{1,253}\Z)[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?(\.[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?)*\Z")
 WA_BAD = "Het antwoord van de beveiligingssleutel klopt niet"
 WA_UNKNOWN = "De beveiligingssleutel is niet herkend"
 WA_EXPIRED = "Het aanmelden met de sleutel duurde te lang of is in een ander venster begonnen; probeer het opnieuw"
@@ -5485,11 +5816,20 @@ def has_password(user: str) -> bool:
     return user == APP_USER or bool((users_state().get(user) or {}).get("pw", True))
 
 
-def wa_view(user: str, rp) -> dict:
+REAUTH_SECONDS = 300   # wie zonder wachtwoord inlogt: zo kort geleden moet die inlog zijn om sleutels te wijzigen
+
+
+def login_recent(request) -> bool:
+    """Of de gebruiker van deze sessie hooguit vijf minuten geleden echt inlogde (met SSO, sleutel of wachtwoord)."""
+    return time.time() - token_since(request.cookies.get(SESSION_COOKIE)) <= REAUTH_SECONDS
+
+
+def wa_view(user: str, rp, request) -> dict:
     u = wa_user(user)
     return {"keys": [{"id": k["id"], "name": k["name"], "created": k["created"], "used": k["used"], "rp": k["rp"], "here": k["rp"] == rp}
                      for k in u["keys"]],
-            "required": u["required"], "password": has_password(user), "rp": rp, "max": WEBAUTHN_MAX_KEYS}
+            "required": u["required"], "password": has_password(user), "rp": rp, "max": WEBAUTHN_MAX_KEYS,
+            "recent": has_password(user) or login_recent(request)}
 
 
 # --- uitdagingen: ondertekend meegegeven aan de pagina, elk maar één keer bruikbaar
@@ -5547,14 +5887,14 @@ def wa_client(raw: str, kind: str, st: dict) -> bytes:
 
 
 def wa_reauth(request, user: str, password: str):
-    """Wie met een wachtwoord inlogt, bevestigt een wijziging aan zijn sleutels daarmee (zoals bij wachtwoord wijzigen)."""
+    """Een wijziging aan de eigen sleutels bevestigt de gebruiker. Wie met een wachtwoord inlogt, doet dat met zijn
+    wachtwoord (zoals bij wachtwoord wijzigen). Wie alleen via SSO inlogt heeft geen wachtwoord: dan moet de inlog van
+    deze sessie recent zijn. Zo voegt niemand met alleen een overgenomen of lang openstaande sessie een eigen sleutel toe."""
     if not has_password(user):
+        if not login_recent(request):
+            raise HTTPException(403, "Log eerst opnieuw in (via SSO of met een sleutel); daarna kun je vijf minuten lang je sleutels wijzigen")
         return
-    source = source_of(request)
-    if login_guard.blocked(source):
-        raise HTTPException(429, "Te veel mislukte pogingen. Probeer het over tien minuten opnieuw.")
-    if not check_login(user, password or ""):
-        login_guard.failed(source)
+    if not login_guard.check(source_of(request), user, lambda: check_login(user, password or "")):
         raise HTTPException(403, "Het wachtwoord klopt niet; er is niets gewijzigd")
 
 
@@ -5622,7 +5962,7 @@ def request_rp(request) -> str | None:
 @app.get("/api/webauthn")
 def wa_get(request: Request, user: str = Depends(auth)):
     """De eigen beveiligingssleutels."""
-    return wa_view(user, request_rp(request))
+    return wa_view(user, request_rp(request), request)
 
 
 @app.post("/api/webauthn/register/start")
@@ -5689,7 +6029,7 @@ def wa_register_finish(body: WaRegisterIn, request: Request, user: str = Depends
         except OSError:
             raise HTTPException(500, "De sleutels konden niet bewaard worden")
     state.event("webauthn", "beveiligingssleutel toegevoegd", target="", name=entry["name"], user=user)
-    return wa_view(user, st["r"])
+    return wa_view(user, st["r"], request)
 
 
 @app.put("/api/webauthn")
@@ -5725,7 +6065,7 @@ def wa_change(body: WaChangeIn, request: Request, user: str = Depends(auth)):
     if body.required is not None:
         state.event("webauthn", "sleutel na het wachtwoord verplicht" if body.required else "sleutel na het wachtwoord niet meer verplicht",
                     target="", name="", user=user)
-    return wa_view(user, request_rp(request))
+    return wa_view(user, request_rp(request), request)
 
 
 @app.delete("/api/users/{name}/webauthn")
@@ -5748,8 +6088,6 @@ def wa_reset(name: str, request: Request, actor: str = Depends(admin)):
 def wa_login_start(body: WaStartIn, request: Request):
     """Inloggen met alleen een beveiligingssleutel (met pincode of vingerafdruk op de sleutel). Met een naam erbij
     biedt de browser alleen de sleutels van die gebruiker aan; zonder naam kiest de sleutel zelf het account."""
-    if login_guard.blocked(source_of(request)):
-        raise HTTPException(429, "Te veel mislukte pogingen. Probeer het over tien minuten opnieuw.")
     origin, rp = wa_origin(request)
     name = body.username.strip()
     if name and not secrets.compare_digest(name.encode(), APP_USER.encode()):
@@ -5764,12 +6102,14 @@ def wa_login_start(body: WaStartIn, request: Request):
 def wa_login_finish(body: WaLoginIn, request: Request, response: Response):
     """Controleert het antwoord van de sleutel, zowel bij inloggen met alleen de sleutel als na het wachtwoord."""
     source = source_of(request)
-    if login_guard.blocked(source):
-        raise HTTPException(429, "Te veel mislukte pogingen. Probeer het over tien minuten opnieuw.")
-    st = wa_read(body.state, ("login", "2fa"))
+    ticket = login_guard.attempt(source)   # een sleutel valt niet te raden: alleen het adres telt (zie LoginGuard)
+    try:
+        st = wa_read(body.state, ("login", "2fa"))
+    except HTTPException:
+        login_guard.undo(ticket)
+        raise
 
     def fail(reason=WA_UNKNOWN):
-        login_guard.failed(source)
         raise HTTPException(401, reason)
     if request.headers.get("origin") != st.get("o"):
         fail()
@@ -5804,7 +6144,8 @@ def wa_login_finish(body: WaLoginIn, request: Request, response: Response):
             save_wa(data)
         except OSError:
             pass
-    login_guard.succeeded(source)
+    login_guard.undo(ticket)
+    login_guard.trust(source, owner)
     start_session(response, owner, bool(st.get("k")) if st["p"] == "2fa" else body.remember)
     return {"ok": True}
 
@@ -5815,10 +6156,10 @@ def wa_login_finish(body: WaLoginIn, request: Request, response: Response):
 # beheerder logt in het consolevenster daarom met zo'n account in; de tool vraagt Proxmox daarmee een ticket en houdt
 # dat alleen in het geheugen, voor deze browsersessie en hooguit een uur. Het wachtwoord wordt nergens bewaard of gelogd.
 NODECON_TTL = 3600
-PAM_USER_RE = re.compile(r"^[a-z_][a-z0-9_.-]{0,31}$")    # een Linux-gebruiker op de nodes
-PVE_NAME_RE = re.compile(r"^[A-Za-z0-9._-]{1,64}$")       # een gebruiker van Proxmox zelf (realm pve)
+PAM_USER_RE = re.compile(r"^[a-z_][a-z0-9_.-]{0,31}\Z")    # een Linux-gebruiker op de nodes
+PVE_NAME_RE = re.compile(r"^[A-Za-z0-9._-]{1,64}\Z")       # een gebruiker van Proxmox zelf (realm pve)
 CONSOLE_REALMS = ("pam", "pve")
-TFA_CODE_RE = re.compile(r"^[A-Za-z0-9-]{4,64}$")
+TFA_CODE_RE = re.compile(r"^[A-Za-z0-9-]{4,64}\Z")
 _nodecon = {}   # sha256(sessiecookie) -> {"owner", "user", "ticket", "csrf", "exp"} of, halverwege, {"owner", "user", "challenge", "exp"}
 nodecon_lock = threading.Lock()
 
@@ -5871,6 +6212,19 @@ def nodecon_why(userid: str) -> str:
     return plain
 
 
+def nodecon_ticket(ticket, userid: str, password: str, **extra) -> dict | None:
+    """Laat Proxmox het account controleren (zie pve_ticket) en houdt de rem op inloggen bij: klopt het wachtwoord (of
+    de code), dan telt de poging niet; is Proxmox niet bereikbaar, dan ook niet."""
+    try:
+        data = pve_ticket(userid, password, **extra)
+    except HTTPException:
+        login_guard.undo(ticket)
+        raise
+    if data is not None:
+        login_guard.ok(ticket)
+    return data
+
+
 @app.get("/api/nodeconsole")
 def nodecon_get(request: Request, user: str = Depends(admin)):
     return nodecon_view(nodecon_entry(nodecon_key(request), user))
@@ -5882,8 +6236,6 @@ def nodecon_login(body: NodeConIn, request: Request, user: str = Depends(admin))
     tweestapsverificatie in twee keer."""
     same_origin(request)
     source, key = source_of(request), nodecon_key(request)
-    if login_guard.blocked(source):
-        raise HTTPException(429, "Te veel mislukte pogingen. Probeer het over tien minuten opnieuw.")
     pending = nodecon_entry(key, user)
     if body.code:
         if not pending or not pending.get("challenge"):
@@ -5892,8 +6244,9 @@ def nodecon_login(body: NodeConIn, request: Request, user: str = Depends(admin))
         if not TFA_CODE_RE.match(code):
             raise HTTPException(400, "Ongeldige code")
         kind = "totp" if code.isdigit() and len(code) <= 8 else "recovery"
-        data = pve_ticket(pending["user"], f"{kind}:{code}", **{"tfa-challenge": pending["challenge"]})
         userid = pending["user"]
+        ticket = login_guard.attempt(source, "pve:" + userid)
+        data = nodecon_ticket(ticket, userid, f"{kind}:{code}", **{"tfa-challenge": pending["challenge"]})
     else:
         name, realm = body.username.strip(), body.realm
         for suffix in CONSOLE_REALMS:   # wie zelf @pam of @pve achter de naam typt, bedoelt die realm
@@ -5905,9 +6258,9 @@ def nodecon_login(body: NodeConIn, request: Request, user: str = Depends(admin))
         elif not PAM_USER_RE.match(name) or not body.password:
             raise HTTPException(400, "Vul een gebruiker van de node in (bijvoorbeeld root) en zijn wachtwoord")
         userid = f"{name}@{realm}"
-        data = pve_ticket(userid, body.password)
+        ticket = login_guard.attempt(source, "pve:" + userid)   # dezelfde teller als bij inloggen met een Proxmox-account
+        data = nodecon_ticket(ticket, userid, body.password)
     if data is None:
-        login_guard.failed(source)
         with nodecon_lock:
             _nodecon.pop(key, None)
         raise HTTPException(403, nodecon_why(userid))   # geen 401: dat leest de pagina als "sessie verlopen" en stuurt naar de inlogpagina
@@ -5919,7 +6272,6 @@ def nodecon_login(body: NodeConIn, request: Request, user: str = Depends(admin))
         return nodecon_view(nodecon_entry(key, user))
     if not isinstance(data.get("CSRFPreventionToken"), str):
         raise HTTPException(502, "Proxmox gaf geen bruikbaar antwoord bij het controleren van het account")
-    login_guard.succeeded(source)
     with nodecon_lock:
         _nodecon[key] = {"owner": user, "user": str(data["username"]), "ticket": data["ticket"], "csrf": data["CSRFPreventionToken"],
                          "exp": time.time() + NODECON_TTL}
@@ -6031,7 +6383,7 @@ async def node_console(ws: WebSocket, node: str):
 # zelf op een plek krijgt, en nooit meer dan zijn gebruiker; zonder mag het precies wat de gebruiker mag. Het geheim
 # toont Proxmox maar één keer, bij het aanmaken; de tool bewaart het nergens. Tokens van root@pam en van de gebruiker
 # waarmee de tool zelf werkt, wijzigt de tool niet.
-TOKEN_ID_RE = re.compile(r"^[A-Za-z][A-Za-z0-9._-]{1,63}$")
+TOKEN_ID_RE = re.compile(r"^[A-Za-z][A-Za-z0-9._-]{1,63}\Z")
 
 
 class PveTokenIn(BaseModel):
@@ -6142,8 +6494,8 @@ def access_token_delete(userid: str, tokenid: str, request: Request, user: str =
 # Per tabel welke kolommen uit staan (hide: "i3" = de vierde kolom, of de naam van een kolom) en welke extra kolommen
 # erbij staan (add), met het aantal kolommen (sig) waarvoor dat gold: verandert een tabel in een nieuwe versie, dan
 # geldt de keuze niet meer. Per tabblad de volgorde van de blokken (order).
-TABLE_KEY_RE = re.compile(r"^[a-z][a-z0-9-]{0,30}(\.[a-z0-9-]{1,30})?$")
-TABLE_COL_RE = re.compile(r"^(i\d{1,2}|[a-z][a-z0-9-]{0,20})$")
+TABLE_KEY_RE = re.compile(r"^[a-z][a-z0-9-]{0,30}(\.[a-z0-9-]{1,30})?\Z")
+TABLE_COL_RE = re.compile(r"^(i\d{1,2}|[a-z][a-z0-9-]{0,20})\Z")
 
 
 def clean_tables(d) -> dict:
@@ -6326,7 +6678,7 @@ def agent(ip: str, *words: str, timeout: int = 30) -> str:
     return p.stdout
 
 
-KERNEL_PKG_RE = re.compile(r"^(?:proxmox|pve)-kernel-(\d+\.\d+\.\d+-\d+-pve)(?:-signed)?$")
+KERNEL_PKG_RE = re.compile(r"^(?:proxmox|pve)-kernel-(\d+\.\d+\.\d+-\d+-pve)(?:-signed)?\Z")
 
 
 def newer_kernel(versions, running):
@@ -6442,9 +6794,11 @@ class Updates:
     @staticmethod
     def _vm_os(api, node, vmid):
         try:
-            return api.nodes(node).qemu(vmid).agent("get-osinfo").get()["result"].get("pretty-name")
-        except (ResourceException, KeyError, TypeError):
+            name = api.nodes(node).qemu(vmid).agent("get-osinfo").get()["result"].get("pretty-name")
+        except (ResourceException, KeyError, TypeError, AttributeError):
             return None  # geen QEMU guest agent in de VM
+        # Wat de guest agent meldt komt van binnen de VM: alleen gewone tekst, en niet te lang.
+        return " ".join(name.split())[:120] or None if isinstance(name, str) else None
 
 
 updates = Updates()
@@ -6709,8 +7063,8 @@ auto_lock = threading.Lock()
 
 
 AUTO_MAX = 20                                   # zoveel schema's naast elkaar
-AUTO_ID_RE = re.compile(r"^s[0-9a-f]{1,8}$")
-AUTO_NAME_RE = re.compile(r"^[^\x00-\x1f\x7f<>]{0,40}$")
+AUTO_ID_RE = re.compile(r"^s[0-9a-f]{1,8}\Z")
+AUTO_NAME_RE = re.compile(r"^[^\x00-\x1f\x7f<>]{0,40}\Z")
 
 
 def auto_clean(saved, sid: str = "s1") -> dict:
@@ -7260,9 +7614,9 @@ def task_log(node: str, upid: str, _: str = Depends(auth)):
 # De tool beheert de back-upschema's van Proxmox zelf (/cluster/backup) en start vzdump op de nodes. Proxmox voert
 # de schema's dus uit, ook als deze tool uit staat, en schrijft gewone vzdump-archieven (CT: tar.zst, VM: vma.zst)
 # die elke Proxmox-installatie kan terugzetten, zonder deze tool.
-JOB_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]{0,49}$")
-SCHEDULE_RE = re.compile(r"^[A-Za-z0-9 ,.*:/-]{1,100}$")
-VOLID_RE = re.compile(r"^([A-Za-z0-9][A-Za-z0-9._-]*):backup/vzdump-(lxc|qemu)-(\d+)-[0-9_-]+\.[A-Za-z0-9.]+$")
+JOB_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]{0,49}\Z")
+SCHEDULE_RE = re.compile(r"^[A-Za-z0-9 ,.*:/-]{1,100}\Z")
+VOLID_RE = re.compile(r"^([A-Za-z0-9][A-Za-z0-9._-]*):backup/vzdump-(lxc|qemu)-(\d+)-[0-9_-]+\.[A-Za-z0-9.]+\Z")
 MODES = {"snapshot", "suspend", "stop"}
 KEEP = ("last", "daily", "weekly", "monthly")
 NOTES = "{{guestname}}"
@@ -7665,11 +8019,11 @@ def watch_jobs():
 # alleen voor de tool leesbaar en het wachtwoord gaat nooit terug naar de pagina.
 MAIL_FILE = STATE_DIR / "mail.json"
 MAIL_SECURITY = ("starttls", "ssl", "none")   # STARTTLS (meestal poort 587), direct versleuteld (465), of onversleuteld
-EMAIL_RE = re.compile(r"^[A-Za-z0-9._%+\-]{1,64}@[A-Za-z0-9]([A-Za-z0-9.\-]{0,188}[A-Za-z0-9])?\.[A-Za-z]{2,24}$")
-MAILHOST_RE = re.compile(r"^(?=.{4,253}$)[A-Za-z0-9]([A-Za-z0-9\-]{0,61}[A-Za-z0-9])?(\.[A-Za-z0-9]([A-Za-z0-9\-]{0,61}[A-Za-z0-9])?)+$")
-MAILNAME_RE = re.compile(r"^[^\x00-\x1f\x7f\"<>\\\\]{0,60}$")
-MAILLOGIN_RE = re.compile(r"^[^\x00-\x20\x7f]{1,255}$")
-APP_PASSWORD_RE = re.compile(r"^[A-Za-z]{4}( [A-Za-z]{4}){3}$")   # zo toont Google een app-wachtwoord: vier groepjes
+EMAIL_RE = re.compile(r"^[A-Za-z0-9._%+\-]{1,64}@[A-Za-z0-9]([A-Za-z0-9.\-]{0,188}[A-Za-z0-9])?\.[A-Za-z]{2,24}\Z")
+MAILHOST_RE = re.compile(r"^(?=.{4,253}\Z)[A-Za-z0-9]([A-Za-z0-9\-]{0,61}[A-Za-z0-9])?(\.[A-Za-z0-9]([A-Za-z0-9\-]{0,61}[A-Za-z0-9])?)+\Z")
+MAILNAME_RE = re.compile(r"^[^\x00-\x1f\x7f\"<>\\\\]{0,60}\Z")
+MAILLOGIN_RE = re.compile(r"^[^\x00-\x20\x7f]{1,255}\Z")
+APP_PASSWORD_RE = re.compile(r"^[A-Za-z]{4}( [A-Za-z]{4}){3}\Z")   # zo toont Google een app-wachtwoord: vier groepjes
 _mail = {"stamp": None, "data": None}
 
 
@@ -8122,7 +8476,7 @@ def report_send(_: str = Depends(manage_events)):
 # Events) kies je hoe vaak, wanneer, welke onderdelen erin staan en of het alleen komt als er iets aan de hand is.
 REPORT_FREQ = ("off", "daily", "weekly", "biweekly", "monthly")
 REPORT_PARTS = ("issues", "nodes", "guests", "backups", "updates", "storage", "failed")
-TIME_RE = re.compile(r"^([01]\d|2[0-3]):[0-5]\d$")
+TIME_RE = re.compile(r"^([01]\d|2[0-3]):[0-5]\d\Z")
 REPORT_TITLE = {"daily": "Dagoverzicht", "weekly": "Weekoverzicht", "biweekly": "Tweewekelijks overzicht", "monthly": "Maandoverzicht"}
 REPORT_IN = {"daily": "de afgelopen dag", "weekly": "deze week", "biweekly": "de afgelopen twee weken", "monthly": "de afgelopen maand"}
 
@@ -8380,7 +8734,7 @@ class SettingsIn(BaseModel):
 # De indeling van het dashboard: tegels op een raster van 24 kolommen (x, y, breedte w, hoogte h in hokjes), welke
 # tegels uit staan, hoe vaak de cijfers (live) en de grafieken (history) ververst worden en of alles op één scherm
 # moet passen (fit).
-DASH_ID_RE = re.compile(r"^(gauge:(cpu|mem):[A-Za-z0-9][A-Za-z0-9\-]{0,62}|guest:\d{1,9}|chart:(cpu|mem|net)|nums|issues|top|storage|clock)$")
+DASH_ID_RE = re.compile(r"^(gauge:(cpu|mem):[A-Za-z0-9][A-Za-z0-9\-]{0,62}|guest:\d{1,9}|chart:(cpu|mem|net)|nums|issues|top|storage|clock)\Z")
 DASH_COLS, DASH_MAX = 24, 200
 DASH_LIVE, DASH_HISTORY = (2, 5, 10, 15, 30, 60), (30, 60, 120, 300, 600)
 
@@ -8458,7 +8812,7 @@ SCRIPTS_SITE = "https://community-scripts.org/scripts/"
 SCRIPTS_FIELDS = "name,slug,description,categories,port,is_deleted,is_disabled,is_dev,expand.type.type"
 SCRIPTS_MAX_AGE = 24 * 3600
 SCRIPTS_RETRY = 600
-SCRIPT_SLUG = re.compile(r"^[a-z0-9][a-z0-9._-]{0,80}$")
+SCRIPT_SLUG = re.compile(r"^[a-z0-9][a-z0-9._-]{0,80}\Z")
 SCRIPT_TYPES = {"lxc", "vm", "pve", "addon"}
 
 
@@ -8597,7 +8951,7 @@ def selfupdate_view(user: str) -> dict:
     except (OSError, ValueError):
         result = None
     return {"version": VERSION, "available": UPDATER.is_file(), "busy": UPDATE_TRIGGER.exists(),
-            "result": result if isinstance(result, dict) else None, "github": github_view(user)}
+            "result": result if isinstance(result, dict) else None, "github": github_view(user), "node": node_update_state()}
 
 
 @app.get("/api/selfupdate/status")
@@ -8642,6 +8996,10 @@ async def judge_update() -> dict:
     if not verdict["ok"]:
         if verdict.get("code") == "not_a_package" and not member:
             verdict["code"] = wrong_file(UPDATE_FILE) or "not_a_package"
+        if verdict.get("code") == "needs_setup":   # misschien wel te installeren via de node (zie node_update_plan)
+            verdict["node_update"] = await asyncio.to_thread(node_update_plan)
+            if verdict["node_update"].get("possible"):
+                return verdict   # het bestand blijft klaarstaan voor de node
         UPDATE_FILE.unlink(missing_ok=True)   # een afgekeurd bestand blijft niet liggen
     return verdict
 
@@ -8650,7 +9008,7 @@ async def judge_update() -> dict:
 # gebouwde setup-bestand daarin bovenin (map/maintool-setup.sh, naast de uitleg). Alleen dat ene bestand wordt eruit
 # gelezen, nooit iets uitgepakt op schijf, en hooguit UPDATE_MAX groot; daarna volgt dezelfde controle als voor een los
 # setup-bestand.
-ARCHIVE_SETUP_RE = re.compile(r"^(?:[^/]+/)?maintool-setup\.sh$")
+ARCHIVE_SETUP_RE = re.compile(r"^(?:[^/]+/)?maintool-setup\.sh\Z")
 
 
 def from_archive(path: Path) -> tuple:
@@ -8727,11 +9085,7 @@ def selfupdate_apply(body: UpdateIn, request: Request, user: str = Depends(admin
     """Geeft het startsein voor de installatie. Vraagt het wachtwoord opnieuw: een open staande, ingelogde pagina
     is hier niet genoeg."""
     update_guard(request)
-    source = request.client.host if request.client else "?"
-    if login_guard.blocked(source):
-        raise HTTPException(429, "Te veel mislukte pogingen. Probeer het over tien minuten opnieuw.")
-    if not check_login(user, body.password):
-        login_guard.failed(source)
+    if not login_guard.check(source_of(request), user, lambda: check_login(user, body.password)):
         raise HTTPException(403, "Het wachtwoord klopt niet; er is niets geïnstalleerd")
     if not UPDATE_FILE.is_file():
         raise HTTPException(409, "Er staat geen gecontroleerd bestand klaar; kies het bestand opnieuw")
@@ -8757,7 +9111,7 @@ def selfupdate_apply(body: UpdateIn, request: Request, user: str = Depends(admin
 # aanlevert, en installeren vraagt daarna nog steeds het wachtwoord. Naar GitHub gaat alleen de vraag welke versies er
 # zijn, niets over het cluster. UPDATE_REPO leeg in maintool.env zet het kijken uit.
 UPDATE_REPO = os.environ.get("UPDATE_REPO", "EduardWichers/Proxmox-MainTool").strip()
-REPO_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9-]{0,38}/[A-Za-z0-9._-]{1,100}$")
+REPO_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9-]{0,38}/[A-Za-z0-9._-]{1,100}\Z")
 if UPDATE_REPO and not REPO_RE.match(UPDATE_REPO):
     UPDATE_REPO = ""   # onzin in maintool.env: dan niet kijken, in plaats van een vreemd adres op te vragen
 GITHUB_API = "https://api.github.com"
@@ -8766,7 +9120,7 @@ GITHUB_ZIP_HOSTS = ("github.com", "codeload.github.com")   # de ZIP van een tag 
 GITHUB_EVERY = 6 * 3600   # zo vaak kijken
 GITHUB_RETRY = 3600       # na een mislukte poging eerder opnieuw
 GITHUB_GAP = 30           # vaker dan dit op Opnieuw kijken drukken geeft het vorige antwoord (GitHub telt de vragen)
-VERSION_TAG_RE = re.compile(r"^v?(\d{1,4}(?:\.\d{1,4}){1,2})$")
+VERSION_TAG_RE = re.compile(r"^v?(\d{1,4}(?:\.\d{1,4}){1,2})\Z")
 NOTES_MAX = 4000
 github_lock = threading.Lock()
 
@@ -8948,21 +9302,206 @@ async def selfupdate_github(body: GithubIn, request: Request, _: str = Depends(a
     if refused:
         return {"ok": False, "code": refused}
     verdict = await judge_update()
-    if verdict.get("ok") and version_key(verdict.get("version")) != version_key(body.version):
+    found = verdict.get("version") if verdict.get("ok") else (verdict.get("node_update") or {}).get("version")
+    if found and version_key(found) != version_key(body.version):
         # het setup-bestand in de ZIP is niet opnieuw gebouwd voor deze versie: niet stilletjes iets anders installeren
         UPDATE_FILE.unlink(missing_ok=True)
-        return {"ok": False, "code": "github_mismatch", "version": verdict.get("version"), "wanted": body.version}
+        return {"ok": False, "code": "github_mismatch", "version": found, "wanted": body.version}
     verdict["from_github"] = g["tag"]
     return verdict
+
+
+# ---------------------------------------------------------------- bijwerken via de node
+# Een versie die meer verandert dan de pagina mag installeren (de Python-pakketten, de systemd-dienst, het
+# bijwerkprogramma, het hulpscript op de nodes), installeert het setup-bestand op een node: bash maintool-setup.sh
+# --update ID. Dat kan de tool zelf starten, via de console van de node waar zijn container staat. Daarvoor logt een
+# beheerder in het consolevenster in als root@pam: alleen dat account krijgt op een node meteen een shell als root, en
+# zonder die inlog kan de tool niets op een node starten (het hulpscript op de nodes kan dit bewust niet). De tool typt
+# dan één regel in die shell: het klaargezette setup-bestand uit de container halen (pct pull), de vingerafdruk
+# controleren en het setup-bestand op de achtergrond starten (systemd-run), zodat het doorloopt terwijl de tool zelf
+# herstart. Het setup-bestand meldt de afloop in de container (/var/lib/maintool-update/result.json), net als het
+# bijwerkprogramma. Een setup-bestand kan dit vanaf versie 1.5.2: daarin staat de regel UNATTENDED=1.
+NODE_UPDATE_STATE = UPDATE_DIR / "node.json"   # welke versie via welke node wordt bijgewerkt (voor de pagina)
+SETUP_VERSION_RE = re.compile(rb'^VERSION="(\d{1,4}(?:\.\d{1,4}){1,2})"$', re.M)
+SETUP_UNATTENDED_RE = re.compile(rb"^UNATTENDED=1\b", re.M)
+NODE_UPDATE_USER = "root@pam"
+NODE_UPDATE_WAIT = 20 * 60   # zo lang telt een gestarte update als bezig; daarna kan het opnieuw
+
+
+def staged_setup() -> dict | None:
+    """Het klaargezette setup-bestand: versie, vingerafdruk en of het zonder vragen kan bijwerken; None als er niets
+    (bruikbaars) klaarstaat. Het bijwerkprogramma heeft het al gecontroleerd; dit leest alleen de kop."""
+    try:
+        with open(UPDATE_FILE, "rb") as f:
+            head = f.read(16384)
+            digest = hashlib.sha256(head)
+            for block in iter(lambda: f.read(1 << 20), b""):
+                digest.update(block)
+    except OSError:
+        return None
+    found = SETUP_VERSION_RE.search(head)
+    if not head.startswith(b"#!/usr/bin/env bash") or not found:
+        return None
+    return {"version": found.group(1).decode(), "sha256": digest.hexdigest(), "unattended": bool(SETUP_UNATTENDED_RE.search(head))}
+
+
+def own_container(api) -> dict | None:
+    """De container waarin de tool zelf draait: een CT met de naam van deze machine (zo herkent de tool zichzelf overal)
+    en het label maintool (zo herkent het setup-bestand hem). None als dat er niet precies één is."""
+    me = socket.gethostname()
+    found = [g for g in api.cluster.resources.get(type="vm") if g.get("type") == "lxc" and g.get("name") == me
+             and "maintool" in str(g.get("tags") or "").split(";")]
+    if len(found) != 1 or not NODE_RE.match(str(found[0].get("node") or "")):
+        return None
+    return {"vmid": int(found[0]["vmid"]), "node": str(found[0]["node"]), "status": found[0].get("status")}
+
+
+def node_update_plan() -> dict:
+    """Kan de klaargezette versie via de node worden geïnstalleerd? Met wat de pagina daarvoor toont."""
+    staged = staged_setup()
+    if not staged:
+        return {"possible": False, "why": "no_file"}
+    plan = {"possible": False, "version": staged["version"], "sha256": staged["sha256"]}
+    if not staged["unattended"] or version_key(staged["version"]) <= version_key(VERSION):
+        return {**plan, "why": "old_setup"}
+    try:
+        own = pve.run(own_container)
+    except HTTPException:
+        own = None
+    if not own:
+        return {**plan, "why": "no_container"}
+    return {**plan, "possible": True, "node": own["node"], "ctid": own["vmid"], "user": NODE_UPDATE_USER}
+
+
+def node_update_state() -> dict | None:
+    """Een via de node gestarte update die nog loopt (of net klaar is); None als er geen is."""
+    try:
+        st = json.loads(NODE_UPDATE_STATE.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    if not isinstance(st, dict) or not isinstance(st.get("time"), int) or time.time() - st["time"] > NODE_UPDATE_WAIT:
+        return None
+    return {k: st.get(k) for k in ("version", "node", "ctid", "time")}
+
+
+def node_update_line(ctid: int, sha256: str, version: str, lang: str, stamp: int) -> tuple:
+    """De regel die de tool in de shell op de node typt, en de twee antwoorden waarop hij wacht. Alle waarden zijn
+    eerder nagekeken (alleen cijfers, punten en hexadecimale tekens); er zit geen ! in (geschiedenis van bash). De
+    aanhalingstekens midden in de antwoorden maken dat de herhaling van de getypte regel zelf niet als antwoord telt."""
+    if not (isinstance(ctid, int) and 100 <= ctid <= 999999999 and re.fullmatch(r"[0-9a-f]{64}", sha256)
+            and re.fullmatch(r"\d{1,4}(\.\d{1,4}){1,2}", version) and lang in LANGS and re.fullmatch(r"/[A-Za-z0-9/_.-]+", str(UPDATE_FILE))):
+        raise HTTPException(500, "De opdracht voor de node kon niet worden gemaakt")
+    target = f"/root/maintool-setup-{version}.sh"
+    line = (f" f={target}; pct pull {ctid} {UPDATE_FILE} \"$f\" && echo \"{sha256}  $f\" | sha256sum -c --status"
+            f" && systemd-run --quiet --collect --unit=maintool-update-{stamp} /bin/bash \"$f\" --lang {lang} --update {ctid} --yes"
+            f" && echo MAINTOOL-STAR\"\"TED-{stamp} || echo MAINTOOL-FAIL\"\"ED-{stamp}")
+    return line, f"MAINTOOL-STARTED-{stamp}", f"MAINTOOL-FAILED-{stamp}"
+
+
+ANSI_RE = re.compile(r"\x1b\[[0-9;?]*[ -/]*[@-~]|\x1b\][^\x07\x1b]*(\x07|\x1b\\)|\x1b[()][A-Za-z0-9]|[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]")   # opmaak van de terminal
+
+
+async def node_type(entry: dict, node: str, line: str, done: str, failed: str, timeout: int = 90) -> tuple:
+    """Typt één regel in een shell op de node (termproxy, net als de console) en wacht op een van de twee antwoorden.
+    Geeft (True, False of None als er niets kwam, de uitvoer als tekst) terug."""
+    term = await asyncio.to_thread(node_termproxy, entry, node)
+    host = f"[{term['host']}]" if ":" in term["host"] else term["host"]
+    url = f"wss://{host}:8006/api2/json/nodes/{node}/vncwebsocket?port={term['port']}&vncticket={urllib.parse.quote(term['ticket'], safe='')}"
+    tls = cluster_ssl_context(CA_FILE) if CA_FILE else None
+    out, outcome = b"", None
+    async with websockets.connect(url, ssl=tls, additional_headers={"Cookie": f"PVEAuthCookie={entry['ticket']}"},
+                                  subprotocols=["binary"], open_timeout=10, max_size=2**20) as upstream:
+        await upstream.send(f"{term.get('user') or entry['user']}:{term['ticket']}\n")
+        if await asyncio.wait_for(upstream.recv(), 10) not in (b"OK", "OK"):
+            raise HTTPException(502, "Proxmox weigert de console")
+        await upstream.send("1:250:40:")   # breed genoeg: de regel loopt niet over meerdere schermregels
+        data = (line + "\n").encode()
+        await upstream.send(b"0:%d:" % len(data) + data)
+        deadline = time.monotonic() + timeout
+        while outcome is None and len(out) < 2**20:
+            left = deadline - time.monotonic()
+            if left <= 0:
+                break
+            try:
+                message = await asyncio.wait_for(upstream.recv(), left)
+            except asyncio.TimeoutError:
+                break
+            out += message if isinstance(message, bytes) else message.encode()
+            text = out.decode("utf-8", "replace")
+            outcome = True if done in text else False if failed in text else None
+        bye = b"exit\n"
+        try:
+            await upstream.send(b"0:%d:" % len(bye) + bye)
+        except Exception:  # noqa: BLE001 - de shell mag al weg zijn
+            pass
+    return outcome, ANSI_RE.sub("", out.decode("utf-8", "replace"))
+
+
+def node_output_reason(text: str, line: str, failed: str) -> str:
+    """Wat de shell meldde tussen de getypte regel en het antwoord: de laatste regels, kort."""
+    after = text.split(line.strip()[-40:], 1)[-1] if line.strip()[-40:] in text else text
+    lines = [x.strip() for x in after.replace("\r", "\n").split("\n") if x.strip() and failed not in x and "MAINTOOL-" not in x]
+    return " / ".join(lines[-2:])[:200] or "?"
+
+
+class NodeUpdateIn(BaseModel):
+    password: str = Field(max_length=300)
+    sha256: str = Field(pattern="^[0-9a-f]{64}$")   # de vingerafdruk die de pagina heeft getoond
+
+
+@app.get("/api/selfupdate/node")
+def selfupdate_node_view(request: Request, user: str = Depends(admin)):
+    """Wat de pagina toont bij een versie die via de node gaat: de node, de container en of de console al open staat."""
+    plan = node_update_plan()
+    entry = nodecon_entry(nodecon_key(request), user)
+    return {**plan, "console": entry["user"] if entry and entry.get("ticket") else None, "running": node_update_state()}
+
+
+@app.post("/api/selfupdate/node")
+async def selfupdate_node(body: NodeUpdateIn, request: Request, user: str = Depends(admin)):
+    """Start het bijwerken via de node (zie hierboven). Vraagt het wachtwoord van de tool opnieuw, zoals bij installeren
+    via de pagina, en een console-inlog als root@pam op die node."""
+    update_guard(request)
+    good = await asyncio.to_thread(login_guard.check, source_of(request), user, lambda: check_login(user, body.password))
+    if not good:
+        raise HTTPException(403, "Het wachtwoord klopt niet; er is niets geïnstalleerd")
+    running = node_update_state()
+    if running and running.get("version") != VERSION:
+        raise HTTPException(409, "Er loopt al een update via node {0}; wacht tot die klaar is".format(running.get("node") or "?"))
+    plan = await asyncio.to_thread(node_update_plan)
+    if not plan.get("possible") or plan.get("sha256") != body.sha256:
+        raise HTTPException(409, "Er staat geen gecontroleerd bestand klaar dat via de node kan; haal de versie opnieuw op")
+    entry = nodecon_entry(nodecon_key(request), user)
+    if not entry or not entry.get("ticket") or entry.get("user") != NODE_UPDATE_USER:
+        raise HTTPException(409, "Log eerst in op de console van node {0} als root@pam".format(plan["node"]))
+    stamp = int(time.time())
+    line, done, failed = node_update_line(plan["ctid"], plan["sha256"], plan["version"], lang_of(request), stamp)
+    try:
+        outcome, text = await node_type(entry, plan["node"], line, done, failed)
+    except HTTPException:
+        raise
+    except Exception as err:  # noqa: BLE001 - geen verbinding, of de console viel weg
+        raise HTTPException(502, "Het starten op node {0} is mislukt: {1}".format(plan["node"], err.__class__.__name__))
+    if outcome is None:
+        raise HTTPException(504, "Node {0} gaf niet op tijd antwoord; kijk op die node of het setup-bestand loopt (systemctl status maintool-update-{1})".format(plan["node"], stamp))
+    if not outcome:
+        raise HTTPException(502, "Het starten op node {0} is mislukt: {1}".format(plan["node"], node_output_reason(text, line, failed)))
+    try:
+        NODE_UPDATE_STATE.write_text(json.dumps({"version": plan["version"], "node": plan["node"], "ctid": plan["ctid"], "time": stamp,
+                                                 "user": user, "unit": f"maintool-update-{stamp}"}), encoding="utf-8")
+    except OSError:
+        pass
+    state.event("selfupdate", "bijwerken via de node gestart", node=plan["node"], target=str(plan["ctid"]), name=plan["version"], user=user)
+    return {"started": True, "version": plan["version"], "node": plan["node"], "ctid": plan["ctid"], "time": stamp, "previous": VERSION}
 
 
 # ---------------------------------------------------------------- aanmaken: container, VM, opslag
 # De plusknop in de pagina. Elk verzoek wordt hier opnieuw nagekeken tegen wat de gekozen node werkelijk heeft
 # (opslag, sjablonen, ISO's, netwerkbruggen); er gaat niets ongecontroleerd door naar Proxmox.
-NAME_RE = re.compile(r"^[A-Za-z0-9]([A-Za-z0-9-]{0,61}[A-Za-z0-9])?$")
-STORAGE_RE = re.compile(r"^[A-Za-z][A-Za-z0-9._-]{1,31}$")
-SERVER_RE = re.compile(r"^[A-Za-z0-9]([A-Za-z0-9.-]{0,251}[A-Za-z0-9])?$")
-SSH_KEY_RE = re.compile(r"^(ssh-ed25519|ssh-rsa|ecdsa-sha2-nistp(256|384|521)) [A-Za-z0-9+/]{40,}={0,3}( [^\r\n]{0,200})?$")
+NAME_RE = re.compile(r"^[A-Za-z0-9]([A-Za-z0-9-]{0,61}[A-Za-z0-9])?\Z")
+STORAGE_RE = re.compile(r"^[A-Za-z][A-Za-z0-9._-]{1,31}\Z")
+SERVER_RE = re.compile(r"^[A-Za-z0-9]([A-Za-z0-9.-]{0,251}[A-Za-z0-9])?\Z")
+SSH_KEY_RE = re.compile(r"^(ssh-ed25519|ssh-rsa|ecdsa-sha2-nistp(256|384|521)) [A-Za-z0-9+/]{40,}={0,3}( [^\r\n]{0,200})?\Z")
 CONTENT_KINDS = ("backup", "images", "rootdir", "iso", "vztmpl", "snippets")
 
 
@@ -9563,9 +10102,9 @@ def node_logbook(node: str, _: str = Depends(auth)):
 # netwerk van het cluster zelf. Aanmaken gaat in twee stappen, net als in Proxmox: eerst klaarzetten, dan toepassen.
 # Toepassen laadt de netwerkinstellingen opnieuw (van één node, of bij SDN van alle nodes) en is daarom altijd een
 # eigen, bewuste stap waarbij de pagina eerst laat zien wat er klaarstaat.
-SDN_ID_RE = re.compile(r"^[a-z][a-z0-9]{1,7}$")
-DEVICE_RE = re.compile(r"^[A-Za-z][A-Za-z0-9_\-]{0,14}$")
-ALIAS_RE = re.compile(r"^[A-Za-z0-9 _.()\-]{0,60}$")
+SDN_ID_RE = re.compile(r"^[a-z][a-z0-9]{1,7}\Z")
+DEVICE_RE = re.compile(r"^[A-Za-z][A-Za-z0-9_\-]{0,14}\Z")
+ALIAS_RE = re.compile(r"^[A-Za-z0-9 _.()\-]{0,60}\Z")
 VLAN_PARENTS = ("bridge", "bond", "eth")
 IFACE_ORDER = {"bridge": 0, "OVSBridge": 0, "bond": 1, "OVSBond": 1, "vlan": 2, "eth": 3}
 
@@ -10357,9 +10896,9 @@ def events_info(days: int = 7, since: int | None = None, until: int | None = Non
 # --- IP-adressen van een guest (steeksleutel). Bij een container staan ze in de regel van de netwerkkaart (ip, gw, ip6,
 # gw6); bij een VM alleen via cloud-init (ipconfigN), anders stel je ze in de VM zelf in. Alleen die vier delen van een
 # regel veranderen, op hun eigen plek; al het andere (naam, bridge, VLAN, MAC-adres, firewall) blijft letterlijk staan.
-CLOUDINIT_DISK_RE = re.compile(r"^(ide|sata|scsi|virtio)\d{1,2}$")
+CLOUDINIT_DISK_RE = re.compile(r"^(ide|sata|scsi|virtio)\d{1,2}\Z")
 IP_PARTS = ("ip", "gw", "ip6", "gw6")
-SEARCH_RE = re.compile(r"^[A-Za-z0-9]([A-Za-z0-9-]{0,61}[A-Za-z0-9])?(\.[A-Za-z0-9]([A-Za-z0-9-]{0,61}[A-Za-z0-9])?)*$")
+SEARCH_RE = re.compile(r"^[A-Za-z0-9]([A-Za-z0-9-]{0,61}[A-Za-z0-9])?(\.[A-Za-z0-9]([A-Za-z0-9-]{0,61}[A-Za-z0-9])?)*\Z")
 
 
 def has_cloudinit(cfg: dict) -> bool:
@@ -10554,7 +11093,7 @@ class GuestEdit(BaseModel):
 
 # Labels (tags) van een guest, zoals Proxmox ze toestaat: een letter, cijfer of _ en daarna ook - + en punt. Proxmox
 # bewaart ze in de configuratie als "a;b;c". Het setup-bestand herkent de container van de tool aan zijn label.
-TAG_RE = re.compile(r"^[A-Za-z0-9_][A-Za-z0-9_+.\-]{0,63}$")
+TAG_RE = re.compile(r"^[A-Za-z0-9_][A-Za-z0-9_+.\-]{0,63}\Z")
 OWN_TAG = "maintool"
 
 
@@ -10712,9 +11251,9 @@ def guest_config_save(node: str, kind: str, vmid: int, body: GuestEdit, request:
 # ---------------------------------------------------------------- een schijf van een guest vergroten (steeksleutel)
 # Proxmox kan een schijf alleen groter maken, nooit kleiner. Bij een container groeit het bestandssysteem mee; in een
 # VM moet de partitie daarna in de VM zelf worden vergroot. De opslag moet de extra ruimte vrij hebben.
-DISK_KEY_RE = re.compile(r"^(rootfs|mp\d{1,3}|(scsi|virtio|sata|ide)\d{1,2})$")
-VM_DATA_DISK_RE = re.compile(r"^(scsi|virtio|sata|ide)\d{1,2}$")
-SIZE_RE = re.compile(r"^(\d+(?:\.\d+)?)([KMGT]?)$")
+DISK_KEY_RE = re.compile(r"^(rootfs|mp\d{1,3}|(scsi|virtio|sata|ide)\d{1,2})\Z")
+VM_DATA_DISK_RE = re.compile(r"^(scsi|virtio|sata|ide)\d{1,2}\Z")
+SIZE_RE = re.compile(r"^(\d+(?:\.\d+)?)([KMGT]?)\Z")
 SIZE_UNITS = {"": 1, "K": 2**10, "M": 2**20, "G": 2**30, "T": 2**40}
 MAX_GROW_GB = 16384
 
@@ -10806,7 +11345,7 @@ def disks_with_free(api, node: str, kind: str, cfg: dict) -> list:
 
 
 # ---------------------------------------------------------------- het netwerk van een guest (tabblad Netwerken)
-NIC_RE = re.compile(r"^net\d{1,2}$")
+NIC_RE = re.compile(r"^net\d{1,2}\Z")
 
 
 class NicIn(BaseModel):
@@ -10914,5 +11453,5 @@ def dashboard(request: Request, response: Response, user: str = Depends(auth)):
     kept = token_remembered(request.cookies.get(SESSION_COOKIE)) and session_policy()["remember"]
     pol = session_policy()
     if token_expiry(request.cookies.get(SESSION_COOKIE)) - time.time() < (pol["remember_days"] * 86400 if kept else pol["session_hours"] * 3600) / 2:
-        set_session_cookie(response, user, kept)
+        set_session_cookie(response, user, kept, token_since(request.cookies.get(SESSION_COOKIE)))
     return data

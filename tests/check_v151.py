@@ -120,7 +120,7 @@ class Api:
 main.pve_ticket = fake_ticket
 main.pve.run = lambda fn: fn(Api())
 
-main.login_guard.failures.clear()
+main.login_guard.reset()
 ROOT = session_of(call("POST", "/api/login", body={"username": main.APP_USER, "password": main.APP_PASSWORD})[2])
 PW = secrets.token_urlsafe(18)
 call("POST", "/api/users", ROOT, {"name": "lezer", "roles": [], "password": PW})
@@ -129,7 +129,7 @@ check("uitgangssituatie: beheerder en lezer", all([ROOT, READER]))
 
 
 def login(**body):
-    main.login_guard.failures.clear()
+    main.login_guard.reset()
     call("DELETE", "/api/nodeconsole", ROOT)
     TICKETS.clear()
     return call("POST", "/api/nodeconsole/login", ROOT, body)
@@ -188,7 +188,7 @@ check("de melding noemt geen pam-account meer voor een pve-account", "pam" not i
 
 # ================================================================ E. rechten, logboek, vertalingen, pagina
 print("--- E. overige")
-main.login_guard.failures.clear()
+main.login_guard.reset()
 check("alleen beheerders", call("POST", "/api/nodeconsole/login", READER, {"username": "Eduard", "password": "goed", "realm": "pve"})[0] == 403)
 login(username="Eduard", password="goed", realm="pve")
 events = [json.loads(l) for l in (COPY / "state" / "events.jsonl").read_text(encoding="utf-8").splitlines() if l.strip()]

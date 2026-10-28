@@ -5,7 +5,7 @@ Erstellt von Eduard Wichers.
 
 Diese Anleitung gibt es auch auf Niederländisch ([LEESMIJ.md](LEESMIJ.md)) und Englisch ([README.md](README.md)). Alle drei liegen der Setup-Datei bei.
 
-**[Version 1.5.1 als ZIP herunterladen](../../archive/refs/tags/v1.5.1.zip)**: Der Dateiname enthält die Versionsnummer (die grüne Schaltfläche Code liefert immer …-main.zip). Diese ZIP kannst du in einem Schritt bei **Tool aktualisieren** übergeben. Entpackt liegt oben die Setup-Datei `maintool-setup.sh`, um das Tool auf einem Node zu installieren; der Rest ist der Quellcode. <!-- github -->
+**[Version 1.5.2 als ZIP herunterladen](../../archive/refs/tags/v1.5.2.zip)**: Der Dateiname enthält die Versionsnummer (die grüne Schaltfläche Code liefert immer …-main.zip). Diese ZIP kannst du in einem Schritt bei **Tool aktualisieren** übergeben. Entpackt liegt oben die Setup-Datei `maintool-setup.sh`, um das Tool auf einem Node zu installieren; der Rest ist der Quellcode. <!-- github -->
 
 ![Der Reiter Übersicht: die Nodes mit ihrer Auslastung, und die Container und VMs mit ihren Tags und Updates](docs/screenshots/de/overview.webp) <!-- github -->
 
@@ -33,7 +33,7 @@ Diese Anleitung gibt es auch auf Niederländisch ([LEESMIJ.md](LEESMIJ.md)) und 
   es noch nicht läuft.
 - Eine Bibliothek mit ISOs und Container-Vorlagen (Reiter Speicher, Schaltfläche ISOs und Vorlagen): Das Tool sucht sie selbst auf jedem Speicher und
   zeigt, auf welchen Nodes sie nutzbar sind. Eine ISO lässt du über eine Webadresse herunterladen (Proxmox holt sie
-  selbst), eine Vorlage holst du aus der Liste von Proxmox, und was du nicht mehr brauchst, löschst du (eine ISO nur,
+  selbst; von einer Adresse im eigenen Netzwerk darf das nur ein Administrator), eine Vorlage holst du aus der Liste von Proxmox, und was du nicht mehr brauchst, löschst du (eine ISO nur,
   wenn keine VM sie im CD-Laufwerk hat). Bei einer neuen VM oder einem neuen Container wählst du daraus.
 - Pro Node eine Sprechblase mit kurzen Informationen (das kleine i neben dem Namen) und ein Schraubenschlüssel für
   die Einstellungen dieses Nodes: Notiz, Zeitzone, DNS, Wake-on-LAN, die Wartezeit vor dem Start der Gäste und die
@@ -190,7 +190,15 @@ Setup-Datei auf dem Node:
 
     bash maintool-setup.sh --update ID
 
-Sie fragt nach der Sprache und dann, ob du fortfahren willst: `ja` eintippen.
+Sie fragt nach der Sprache und dann, ob du fortfahren willst: `ja` eintippen (mit `--yes` am Ende fragt sie das nicht).
+
+Ab Version 1.5.2 kann das Tool das selbst starten: **Tool aktualisieren** zeigt dann **Über Node X aktualisieren**,
+für den Node, auf dem der Container des Tools liegt. Melde dich als root@pam an der Konsole dieses Nodes an (die
+Schaltfläche öffnet dieses Fenster) und bestätige mit deinem Passwort des Tools. Das Tool tippt dann einen Befehl in
+die Shell dieses Nodes: Es holt die Setup-Datei aus seinem eigenen Container (`pct pull`), prüft den Fingerabdruck und
+startet `maintool-setup.sh --update ID --yes` im Hintergrund. Das Tool startet zwischendurch neu; das Fenster zeigt,
+wann es fertig ist, und das Protokoll bleibt auf dem Node in `/var/log/maintool-setup.log`. Ohne Anmeldung als
+root@pam kann das Tool nichts auf einem Node starten.
 
 Alles wieder entfernen (den Container, den Zugriffsschlüssel, die Zeile in `authorized_keys` und, wenn kein anderes
 Maintool sie benutzt, den Benutzer und das Hilfsskript):
@@ -248,6 +256,11 @@ rechts.
   oder Scrollen in einem Tab des Tools; das Aktualisieren im Hintergrund zählt nicht. Das Dashboard an der Wand (SXY)
   und wer angemeldet bleibt, werden nicht abgemeldet. Das Abmelden macht die Seite selbst; eine Sitzung, die nirgends
   offen ist, läuft zu ihrer eigenen Zeit ab.
+- **Falsche Passwörter.** Nach 5 falschen Passwörtern für einen Benutzer von einer Adresse muss diese Kombination zehn
+  Minuten warten; nach 20 Fehlversuchen von einer Adresse diese ganze Adresse. Wird das Passwort eines Benutzers von
+  vielen verschiedenen Adressen aus probiert (10-mal falsch), meldet sich dieser Benutzer zehn Minuten lang nur noch
+  von einer Adresse an, von der aus er sich schon einmal angemeldet hat. Über Cloudflare zählt das Tool die eigene
+  Adresse jeder Person. Fehler einer Person sperren nie alle aus.
 
 ## Sicherheitsschlüssel (YubiKey, Passkey)
 
@@ -267,7 +280,10 @@ Gut zu wissen:
   Browser erlauben Sicherheitsschlüssel nicht auf einer IP-Adresse oder bei einem Zertifikatsfehler, über die
   IP-Adresse in deinem eigenen Netzwerk klappt es also nicht. Ist der Schlüssel bei dir erforderlich, meldest du dich
   über diese IP-Adresse auch nicht mehr nur mit deinem Passwort an.
-- Eine Änderung an deinen Schlüsseln bestätigst du mit deinem Passwort. Das Tool speichert nur den öffentlichen
+- Eine Änderung an deinen Schlüsseln bestätigst du mit deinem Passwort. Meldest du dich nur über SSO an und hast kein
+  Passwort, kannst du einen Schlüssel nur innerhalb von fünf Minuten nach der Anmeldung hinzufügen oder entfernen; das
+  Fenster bietet dann eine Schaltfläche, um dich erneut anzumelden. Entfernt oder ändert ein Administrator bei so einem
+  Benutzer eine SSO-Verknüpfung, werden auch dessen Schlüssel entfernt. Das Tool speichert nur den öffentlichen
   Schlüssel, nichts, womit sich jemand anderes anmelden könnte.
 - Schlüssel verloren? Ein Administrator entfernt im Menü unter Benutzer mit **Schlüssel entfernen** alle deine
   Schlüssel. Bist du selbst der einzige Administrator, entferne auf dem Node die Schlüssel aller Benutzer:
@@ -524,9 +540,11 @@ damit du dich nie aussperren kannst.
   Secret ein, dazu die Adresse, unter der du das Tool öffnest. Bei Microsoft ist der Aussteller
   `https://login.microsoftonline.com/<Tenant-ID>/v2.0`, mit deiner eigenen Tenant-ID. Google und Microsoft verlangen
   eine echte Webadresse, wie deine Cloudflare-Adresse; eine IP-Adresse funktioniert dort nicht. Pro Benutzer verknüpfst
-  du die Mailadresse, mit der er sich bei dem Dienst anmeldet. Bei der ersten Anmeldung hält das Tool fest, welches
-  Konto bei dem Dienst das war; danach kommt nur dieses Konto hinein, auch wenn ein anderes Konto später dieselbe
-  Mailadresse zeigt. Das Client Secret steht lesbar in `/var/lib/maintool/sso.json` (das Tool muss es mitschicken);
+  du die Mailadresse, mit der er sich bei dem Dienst anmeldet. Das Tool nimmt nur eine Adresse an, die der Dienst als
+  bestätigt kennzeichnet (`email_verified`); Microsoft Entra ID liefert diese Kennzeichnung nie mit, dort zählt die
+  Adresse in deinem eigenen Tenant. Bei der ersten Anmeldung hält das Tool fest, welches Konto bei dem Dienst das war;
+  danach kommt nur dieses Konto hinein, auch wenn ein anderes Konto später dieselbe Mailadresse zeigt, und es kommt
+  weiter hinein, wenn sich seine Adresse bei dem Dienst ändert. Das Client Secret steht lesbar in `/var/lib/maintool/sso.json` (das Tool muss es mitschicken);
   diese Datei ist nur für das Tool lesbar, und das Secret wird nie in der Seite angezeigt.
 - **Cloudflare Access**. Steht das Tool hinter Cloudflare Access, dann hast du dich dort schon angemeldet. Trage den
   Teamnamen (den ersten Teil von `deinteam.cloudflareaccess.com`) und den Application Audience (AUD) Tag der Anwendung

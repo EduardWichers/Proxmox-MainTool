@@ -5,7 +5,7 @@ Made by Eduard Wichers.
 
 This explanation is also available in Dutch ([LEESMIJ.md](LEESMIJ.md)) and German ([LIESMICH.md](LIESMICH.md)). All three come with the setup file.
 
-**[Download version 1.5.1 as ZIP](../../archive/refs/tags/v1.5.1.zip)**: the file name contains the version number (the green Code button always gives …-main.zip). You can hand this ZIP to **Update the tool** in one go. Unpacked, the setup file `maintool-setup.sh` is at the top, to install the tool on a node; the rest is the source code. <!-- github -->
+**[Download version 1.5.2 as ZIP](../../archive/refs/tags/v1.5.2.zip)**: the file name contains the version number (the green Code button always gives …-main.zip). You can hand this ZIP to **Update the tool** in one go. Unpacked, the setup file `maintool-setup.sh` is at the top, to install the tool on a node; the rest is the source code. <!-- github -->
 
 ![The Overview tab: the nodes with their load, and the containers and VMs with their tags and updates](docs/screenshots/en/overview.webp) <!-- github -->
 
@@ -30,7 +30,8 @@ This explanation is also available in Dutch ([LEESMIJ.md](LEESMIJ.md)) and Germa
   health and pools of Ceph, and the disks in the nodes with their health and wear. With the wrench at Ceph you manage
   monitors, managers, OSDs, pools and flags, and you build Ceph where it is not running yet.
 - A library of ISOs and container templates (Storage tab, button ISOs and templates): the tool finds them on every storage by itself and shows
-  on which nodes they can be used. You have an ISO downloaded from a web address (Proxmox fetches it itself), you fetch
+  on which nodes they can be used. You have an ISO downloaded from a web address (Proxmox fetches it itself; from an address in your own network only an
+  administrator may do that), you fetch
   a template from the Proxmox list, and you delete what you no longer need (an ISO only if no VM has it in its CD
   drive). When you create a VM or container, you pick from this library.
 - Per node a balloon with brief information (the small i next to the name), and a wrench for the settings of that
@@ -179,7 +180,15 @@ node:
 
     bash maintool-setup.sh --update ID
 
-It asks for the language, and then for `yes` to continue.
+It asks for the language, and then for `yes` to continue (with `--yes` at the end it does not ask).
+
+From version 1.5.2 on, the tool can start this itself: **Update the tool** then shows **Update through node X**, for
+the node where the tool's container is. Log in to the console of that node as root@pam (the button opens that window)
+and confirm with your password of the tool. The tool then types one command in the shell of that node: it fetches the
+setup file from its own container (`pct pull`), checks the fingerprint and starts
+`maintool-setup.sh --update ID --yes` in the background. The tool restarts in between; the window shows when it is
+done, and the report stays on the node in `/var/log/maintool-setup.log`. Without a login as root@pam the tool cannot
+start anything on a node.
 
 Removing everything again (the container, the access key, the line in `authorized_keys` and, if no other Maintool
 uses them, the user and the helper script):
@@ -236,6 +245,11 @@ right.
   touching or scrolling in a tab of the tool; refreshing in the background does not count. The wall dashboard (SXY)
   and whoever stays logged in are not logged out. The page logs out by itself; a session that is not open anywhere
   expires at its own time.
+- **Wrong passwords.** After 5 wrong passwords for one user from one address, that combination has to wait ten
+  minutes; after 20 wrong attempts from one address, that whole address. If a user's password is tried from many
+  different addresses (10 times wrong), that user can for ten minutes only log in from an address they have logged in
+  from before. Through Cloudflare the tool counts each person's own address. One person's mistakes never lock out
+  everyone.
 
 ## Security keys (YubiKey, passkey)
 
@@ -253,8 +267,10 @@ Good to know:
 - A key works on the address where you added it, for example your Cloudflare address. Browsers do not allow security
   keys on an IP address or with a certificate error, so through the IP address in your own network it does not work.
   If the key is required for you, you can no longer log in with only your password through that IP address either.
-- You confirm a change to your keys with your password. The tool only stores the public key, nothing with which
-  someone else could log in.
+- You confirm a change to your keys with your password. If you only log in through SSO and have no password, you can
+  add or remove a key only within five minutes after logging in; the window then offers a button to log in again. If
+  an administrator removes or changes an SSO link of such a user, that user's keys are removed as well. The tool only
+  stores the public key, nothing with which someone else could log in.
 - Lost your key? An administrator removes all your keys in the menu under Users, with **Remove keys**. If you are the
   only administrator yourself, remove everyone's keys on the node:
 
@@ -496,9 +512,11 @@ they then only get in through SSO. The main account always keeps its password, s
   in the issuer, the client ID and the client secret in the tool, plus the address at which you open the tool. For
   Microsoft the issuer is `https://login.microsoftonline.com/<tenant-ID>/v2.0`, with your own tenant ID. Google and
   Microsoft require a real web address, such as your Cloudflare address; an IP address does not work there. Per user
-  you link the mail address with which they log in at the service. At the first login the tool records which account
-  at the service that was; after that only that account gets in, even if another account later shows the same mail
-  address. The client secret is stored readably in `/var/lib/maintool/sso.json` (the tool has to send it along); that
+  you link the mail address with which they log in at the service. The tool only accepts an address the service marks
+  as confirmed (`email_verified`); Microsoft Entra ID never sends that mark, so there the address in your own tenant
+  counts. At the first login the tool records which account at the service that was; after that only that account
+  gets in, even if another account later shows the same mail address, and it keeps getting in if its address at the
+  service changes. The client secret is stored readably in `/var/lib/maintool/sso.json` (the tool has to send it along); that
   file is only readable for the tool and the secret is never shown in the page.
 - **Cloudflare Access**. If the tool is behind Cloudflare Access, you have already logged in there. Fill in the team
   name (the first part of `yourteam.cloudflareaccess.com`) and the Application Audience (AUD) Tag of the application;

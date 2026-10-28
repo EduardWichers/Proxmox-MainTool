@@ -5,7 +5,7 @@ Gemaakt door Eduard Wichers.
 
 Deze uitleg is er ook in het Engels ([README.md](README.md)) en het Duits ([LIESMICH.md](LIESMICH.md)). Alle drie komen mee met het setup-bestand.
 
-**[Download versie 1.5.1 als ZIP](../../archive/refs/tags/v1.5.1.zip)**: de bestandsnaam bevat het versienummer (de groene knop Code geeft altijd …-main.zip). Deze ZIP kun je in één keer aanleveren bij **Tool bijwerken**. Uitgepakt staat bovenin het setup-bestand `maintool-setup.sh`, om de tool op een node te installeren; de rest is de broncode. <!-- github -->
+**[Download versie 1.5.2 als ZIP](../../archive/refs/tags/v1.5.2.zip)**: de bestandsnaam bevat het versienummer (de groene knop Code geeft altijd …-main.zip). Deze ZIP kun je in één keer aanleveren bij **Tool bijwerken**. Uitgepakt staat bovenin het setup-bestand `maintool-setup.sh`, om de tool op een node te installeren; de rest is de broncode. <!-- github -->
 
 ![Het tabblad Overzicht: de nodes met hun belasting, en de containers en VM's met hun labels en updates](docs/screenshots/nl/overview.webp) <!-- github -->
 
@@ -30,7 +30,8 @@ Deze uitleg is er ook in het Engels ([README.md](README.md)) en het Duits ([LIES
   pools van Ceph, en de schijven in de nodes met hun gezondheid en slijtage. Met de steeksleutel bij Ceph beheer je
   monitors, managers, OSD's, pools en vlaggen, en bouw je Ceph op waar het nog niet draait.
 - Een bibliotheek van ISO's en containersjablonen (tabblad Opslag, knop ISO's en sjablonen): de tool zoekt ze zelf op elke opslag en laat zien op
-  welke nodes ze te gebruiken zijn. Een ISO laat je downloaden via een webadres (Proxmox haalt hem zelf op), een
+  welke nodes ze te gebruiken zijn. Een ISO laat je downloaden via een webadres (Proxmox haalt hem zelf op; van een adres in je eigen netwerk mag
+  alleen een beheerder dat), een
   sjabloon haal je uit de lijst van Proxmox, en wat je niet meer nodig hebt verwijder je (een ISO alleen als geen VM hem
   in de cd-speler heeft). Bij een nieuwe VM of container kies je hieruit.
 - Per node een ballonnetje met beknopte informatie (de kleine i naast de naam), en een steeksleutel voor de
@@ -172,7 +173,15 @@ op de node:
 
     bash maintool-setup.sh --update ID
 
-Het vraagt eerst de taal en daarna of je door wilt gaan: typ `ja`.
+Het vraagt eerst de taal en daarna of je door wilt gaan: typ `ja` (met `--yes` aan het eind vraagt het dat niet).
+
+Vanaf versie 1.5.2 kan de tool dit zelf starten: **Tool bijwerken** toont dan **Bijwerken via node X**, voor de node
+waar de container van de tool staat. Log in op de console van die node als root@pam (de knop opent dat venster) en
+bevestig met je wachtwoord van de tool. De tool typt dan één opdracht in de shell van die node: hij haalt het
+setup-bestand uit zijn eigen container (`pct pull`), controleert de vingerafdruk en start
+`maintool-setup.sh --update ID --yes` op de achtergrond. De tool herstart tussendoor; het venster laat zien wanneer
+het klaar is, en het verslag blijft op de node in `/var/log/maintool-setup.log`. Zonder inlog als root@pam kan de tool
+niets op een node starten.
 
 Alles weer weghalen (de container, de toegangssleutel, de regel in `authorized_keys` en, als geen andere Maintool
 ze gebruikt, de gebruiker en het hulpscript):
@@ -227,6 +236,11 @@ Bovenaan de pagina staat als wie je bent ingelogd en wat je mag. Uitloggen doe j
   aanraken of scrollen in een tabblad van de tool; het verversen op de achtergrond telt niet. Het dashboard aan de muur
   (SXY) en wie ingelogd blijft, worden niet uitgelogd. Het uitloggen doet de pagina zelf; een sessie die nergens open
   staat, verloopt op zijn eigen tijd.
+- **Verkeerde wachtwoorden.** Na 5 verkeerde wachtwoorden voor één gebruiker vanaf één adres moet die combinatie tien
+  minuten wachten; na 20 mislukte pogingen vanaf één adres dat hele adres. Wordt het wachtwoord van een gebruiker
+  vanaf veel verschillende adressen geprobeerd (10 keer fout), dan logt die gebruiker tien minuten lang alleen nog in
+  vanaf een adres waarvandaan hij eerder is ingelogd. Via Cloudflare telt de tool ieders eigen adres. Fouten van één
+  persoon sluiten nooit iedereen buiten.
 
 ## Beveiligingssleutels (YubiKey, passkey)
 
@@ -244,8 +258,11 @@ Goed om te weten:
 - Een sleutel werkt op het adres waarop je hem hebt toegevoegd, bijvoorbeeld je Cloudflare-adres. Browsers staan
   beveiligingssleutels niet toe op een IP-adres of bij een certificaatfout, dus via het IP-adres in je eigen netwerk
   lukt het niet. Is de sleutel bij jou verplicht, dan log je via dat IP-adres ook niet meer met alleen je wachtwoord in.
-- Een wijziging aan je sleutels bevestig je met je wachtwoord. De tool bewaart alleen de openbare sleutel, niets
-  waarmee iemand anders zou kunnen inloggen.
+- Een wijziging aan je sleutels bevestig je met je wachtwoord. Log je alleen via SSO in en heb je geen wachtwoord,
+  dan kun je een sleutel alleen toevoegen of verwijderen binnen vijf minuten na het inloggen; het venster biedt dan een
+  knop om opnieuw in te loggen. Haalt een beheerder bij zo'n gebruiker een SSO-koppeling weg of verandert hij die,
+  dan gaan ook diens sleutels weg. De tool bewaart alleen de openbare sleutel, niets waarmee iemand anders zou kunnen
+  inloggen.
 - Sleutel kwijt? Een beheerder haalt in het menu bij Gebruikers met **Sleutels weghalen** al je sleutels weg. Ben je
   zelf de enige beheerder, haal dan op de node de sleutels van iedereen weg:
 
@@ -487,9 +504,11 @@ uit kunt raken.
   in de tool de uitgever (issuer), de client-ID en het client secret in, plus het adres waarop je de tool opent. Bij
   Microsoft is de uitgever `https://login.microsoftonline.com/<tenant-ID>/v2.0`, met je eigen tenant-ID. Google en
   Microsoft willen een echt webadres, zoals je Cloudflare-adres; een IP-adres werkt daar niet. Je koppelt per
-  gebruiker het mailadres waarmee hij bij de dienst inlogt. Bij de eerste inlog legt de tool vast welk account bij
-  de dienst dat was; daarna komt alleen dat account binnen, ook als een ander account later hetzelfde mailadres
-  laat zien. Het client secret staat leesbaar in `/var/lib/maintool/sso.json` (de tool moet het meesturen); dat
+  gebruiker het mailadres waarmee hij bij de dienst inlogt. De tool neemt alleen een adres aan dat de dienst bevestigd
+  noemt (`email_verified`); Microsoft Entra ID geeft die bevestiging nooit mee, daar telt het adres in je eigen tenant.
+  Bij de eerste inlog legt de tool vast welk account bij de dienst dat was; daarna komt alleen dat account binnen, ook
+  als een ander account later hetzelfde mailadres laat zien, en het blijft binnenkomen als zijn adres bij de dienst
+  verandert. Het client secret staat leesbaar in `/var/lib/maintool/sso.json` (de tool moet het meesturen); dat
   bestand is alleen voor de tool leesbaar en het secret wordt nooit in de pagina getoond.
 - **Cloudflare Access**. Staat de tool achter Cloudflare Access, dan heb je daar al ingelogd. Vul de teamnaam (het
   eerste deel van `jouwteam.cloudflareaccess.com`) en de Application Audience (AUD) Tag van de applicatie in; je

@@ -19,6 +19,9 @@ case $cmd in
             "mkdir -p /etc/maintool/ssh")               : ;;
             runuser*selftest.py*)                       echo "Zelftest (nagebootst)"; echo "Uitslag: ${SELFTEST_FAIL:+1}${SELFTEST_FAIL:-0} fout(en)."; [[ -z ${SELFTEST_FAIL:-} ]] ;;
             sh\ -c*install.sh*)                         [[ -z ${INSTALL_FAIL:-} ]] ;;
+            "mkdir -p /var/lib/maintool-update")        mkdir -p "$CTROOT/var/lib/maintool-update" ;;
+            "mv -f /var/lib/maintool-update/result.json.tmp /var/lib/maintool-update/result.json")
+                                                        mv -f "$CTROOT/var/lib/maintool-update/result.json.tmp" "$CTROOT/var/lib/maintool-update/result.json" ;;
             sh\ -c*)                                    : ;;
             *) echo "stand-in pct exec kent dit niet: $*" >&2; exit 99 ;;
         esac ;;
